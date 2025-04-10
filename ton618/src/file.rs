@@ -1,8 +1,7 @@
 use async_trait::async_trait;
-use std::fs::{self, OpenOptions};
+use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::io::Write;
 use crate::message::TaskMessage;
 use crate::datasource::TaskDataSource;
 use anyhow::{Result, Context};
@@ -12,6 +11,15 @@ use serde_json::Value;
 pub struct FileDataSource {
     pub path: PathBuf,
     pub lock: Mutex<()>,
+}
+
+impl FileDataSource {
+    pub fn new<P: Into<PathBuf>>(path: P) -> Self {
+        FileDataSource {
+            path: path.into(),
+            lock: Mutex::new(()),
+        }
+    }
 }
 
 #[async_trait]
@@ -54,8 +62,7 @@ impl TaskDataSource for FileDataSource {
         }
 
         let new_data = serde_json::to_string_pretty(&tasks)?;
-        let mut file = OpenOptions::new().write(true).truncate(true).open(&self.path)?;
-        file.write_all(new_data.as_bytes())?;
+        fs::write(&self.path, new_data.as_bytes())?;
 
         Ok(())
     }
