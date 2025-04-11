@@ -3,6 +3,7 @@ mod message;
 mod datasource;
 mod rdb;
 mod nosql;
+mod schedule;
 
 use std::time::Duration;
 use tokio::time::sleep;
