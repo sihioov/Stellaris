@@ -13,3 +13,4 @@ env_logger = "0.11.8"
 log = "0.4.27"
 chrono = "0.4.40"
 cron = "0.15.0"
+dysonsphere = { path = "../dysonsphere" }

@@ -1,8 +1,11 @@
-use async_trait::async_trait;
-use crate::message::TaskMessage;
+use anyhow::Result;
+use dysonsphere::message::TaskMessage;
 
-#[async_trait]
-pub trait TaskDataSource {
-    async fn fetch_pending(&self) -> anyhow::Result<Vec<TaskMessage>>;
-    async fn mark_processed(&self, task_id: &str) -> anyhow::Result<()>;
+#[async_trait::async_trait]
+pub trait TaskDataSource: Send + Sync {
+    /// Unprocessed task list
+    async fn fetch_pending(&self) -> Result<Vec<TaskMessage>>;
+
+    /// Mark a specific task_id as completed processing.
+    async fn mark_processed(&self, task_id: &str) -> Result<()>;
 }

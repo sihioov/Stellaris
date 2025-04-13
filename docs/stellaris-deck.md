@@ -1,24 +1,25 @@
 ```
 stellaris/                         ← 🛰️ monorepo root
-├── Cargo.toml                     ← [workspace] 정의
+├── Cargo.toml                     ← [workspace] define
 │
-├── dysonsphere/                   ← ☀️ 공통 핵심 모듈 (TaskMessage, DB, 설정 등)
+├── dysonsphere/                   ← ☀️ common core module (TaskMessage, DB, 설정 등)
 │   ├── Cargo.toml
 │   └── src/
-│       ├── message.rs             ← ✅ TaskMessage 정의 (전 모듈 공유)
-│       ├── db/
+│       ├── lib.rs                 ← Entry point
+│       ├── message.rs             ← ✅ TaskMessage define (Shared whole project)
+│       ├── db/                     
 │       │   ├── mod.rs
-│       │   ├── task_table.rs      ← 공통 Task CRUD
-│       │   └── schema.rs          ← SQL 정의용 (선택)
-│       ├── config.rs              ← 설정 로딩 (toml/env)
-│       └── error.rs               ← 공통 에러 타입
+│       │   ├── task_table.rs      ← Common task CRUD
+│       │   └── schema.rs          ← SQL define
+│       ├── config.rs              ← Config loading (toml/env)
+│       └── error.rs               ← Common error type
 │
 ├── ton618/                        ← 🛰️ TaskQueue Agent (Producer)
 │   ├── Cargo.toml
 │   └── src/
-│       ├── main.rs                ← 주기 실행 루프
-│       ├── datasource.rs          ← TaskDataSource 트레잇 정의
-│       ├── file.rs                ← FileDataSource 구현
+│       ├── main.rs                ← Run loop
+│       ├── datasource.rs          ← Define trait TaskDataSource
+│       ├── file.rs                ← FileDataSource Implementation
 │
 │       ├── rdb/
 │       │   ├── mod.rs
@@ -26,21 +27,21 @@ stellaris/                         ← 🛰️ monorepo root
 │       │   ├── sqlite.rs          ← SQLiteAdapter
 │       │   └── postgres.rs        ← PostgresAdapter (stub)
 │
-│       ├── nosql/                 ← (계획 중)
+│       ├── nosql/                 ← (Todo)
 │       │   ├── mod.rs
 │       │   ├── mongo.rs
 │       │   └── dynamo.rs
 │
-│       ├── config.rs              ← 설정 로딩 (선택 사항)
-│       └── scheduler.rs           ← 주기 실행 제어 (선택 사항)
+│       ├── config.rs              ← Config loading (Option)
+│       └── scheduler.rs           ← Run control (Option)
 │
 ├── laniakea/                      ← 💫 Worker (Consumer)
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs
-│       └── processor.rs           ← TaskMessage 처리
+│       └── processor.rs           ← TaskMessage processing
 │
-├── hubble/                        ← 🔭 Scraper (Python 또는 Rust)
+├── hubble/                        ← 🔭 Scraper (Python or Rust)
 │   ├── pyproject.toml / Cargo.toml
 │   └── main.py or main.rs
 ```

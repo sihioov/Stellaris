@@ -2,11 +2,10 @@ use async_trait::async_trait;
 use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use crate::message::TaskMessage;
 use crate::datasource::TaskDataSource;
 use anyhow::{Result, Context};
-
 use serde_json::Value;
+use dysonsphere::message::TaskMessage;
 
 pub struct FileDataSource {
     pub path: PathBuf,
@@ -27,14 +26,24 @@ impl TaskDataSource for FileDataSource {
     async fn fetch_pending(&self) -> Result<Vec<TaskMessage>> {
         let _guard = self.lock.lock().unwrap();
 
-        let raw = fs::read_to_string(&self.path)
-            .with_context(|| format!("failed to read file: {:?}", self.path))?;
+        let raw = match fs::read_to_string(&self.path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                log::warn!("File not found: {:?}. Returning empty list.", self.path);
+                return Ok(vec![]);  // 🔥 파일 없어도 처리 가능
+            }
+            Err(e) => {
+                return Err(e).context(format!("failed to read file: {:?}", self.path));
+            }
+        };
 
-        let tasks: Vec<TaskMessage> = serde_json::from_str(&raw)?;
-        let pending: Vec<TaskMessage> = tasks
+        let all_tasks: Vec<TaskMessage> = serde_json::from_str(&raw)
+            .with_context(|| "failed to parse task JSON")?;
+
+        let pending_tasks = all_tasks
             .into_iter()
-            .filter(|t| {
-                if let Some(Value::String(status)) = &t.meta.as_ref().and_then(|m| m.get("status")) {
+            .filter(|task| {
+                if let Some(Value::String(status)) = task.meta.as_ref().and_then(|m| m.get("status")) {
                     status != "processed"
                 } else {
                     true
@@ -42,8 +51,9 @@ impl TaskDataSource for FileDataSource {
             })
             .collect();
 
-        Ok(pending)
+        Ok(pending_tasks)
     }
+
 
     async fn mark_processed(&self, task_id: &str) -> Result<()> {
         let _guard = self.lock.lock().unwrap();

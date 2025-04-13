@@ -1,16 +1,16 @@
 mod file;
-mod message;
 mod datasource;
 mod rdb;
 mod nosql;
 mod schedule;
 
+use dysonsphere::message::TaskMessage;
 use std::time::Duration;
 use tokio::time::sleep;
 use anyhow::Result;
 use crate::file::FileDataSource;
 use crate::datasource::TaskDataSource;
-use crate::message::TaskMessage;
+use crate::schedule::Scheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,24 +19,26 @@ async fn main() -> Result<()> {
     let datasource = FileDataSource::new("tasks.json");
 
     loop {
-        log::info!("Checking for pending tasks...");
+        log::info!("🔍 Checking for pending tasks...");
 
-        // 미처리 Task 조회
-        log::info!("Calling fetch_pending()...");
-        let tasks: Vec<TaskMessage> = datasource.fetch_pending().await?;
-        log::info!("fetch_pending() completed with {} tasks", tasks.len());
+        let tasks = datasource.fetch_pending().await?;
 
+        if tasks.is_empty() {
+        log::info!("⏸ No pending tasks.");
+        } else {
         for task in &tasks {
-            log::info!("Got task: {:?}", task.task_id);
-            // 여기에 메시지 큐 전송 또는 Worker 호출 코드가 들어갈 수 있음
+        log::info!("✅ Got task: {}", task.task_id);
+        // 작업 처리 예시
+        // send_to_laniakea(task).await;
         }
 
-        // (선택) 테스트용으로 한 번 처리된 Task 마킹해보기
         for task in &tasks {
-            datasource.mark_processed(&task.task_id).await?;
+        datasource.mark_processed(&task.task_id).await?;
+        }
         }
 
-        // 10초 후 재시도 (cron)
-        sleep(Duration::from_secs(10)).await;
+        let scheduler = Scheduler::fixed(Duration::from_secs(10));
+        scheduler.wait_for_next().await;
     }
+
 }
