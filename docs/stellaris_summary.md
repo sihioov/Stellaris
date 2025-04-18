@@ -1,35 +1,35 @@
 
-# Stellaris 프로젝트 - 세션 마이그레이션 핵심 요약
+# 📌 Stellaris Project summary
 
-## 🌌 프로젝트 개요
-- **프로젝트명:** Stellaris
-- **목표:** 고성능 데이터 분산 처리 시스템
-- **전체 아키텍처:**  
-  Scraper(Hubble, Python) → TaskQueue([TON618], Rust) → Worker(Laniakea, Rust) → AI/처리 → 결과 저장(Redis)
+### ࣪🪐 Project summary
+- **Proejct name:** Stellaris
+- **Goal:** High-Performance Data Distributed Processing System
+- **Architecture:**  
+  Scraper(Hubble, Python) → TaskQueue([TON618], Rust) → Worker(Laniakea, Rust) → AI/Processing → Result save(Redis)
 
 ---
 
-## 🧩 구성 요소
+## 🧩 Component
 
-### 📡 Scraper (Hubble)
-- 역할: 데이터 수집
-- 언어: Python
+### 📡 [Hubble] (Scraper)
+- Role: Data crawling
+- Stack: Python
 - 특징: 수집된 데이터를 DB에 저장 (초기에는 JSON 등 사용 가능)
 
-### 🛰️ TaskQueue ([TON618])
-- 역할: DB에서 데이터를 읽고, 메시지(Task)를 생성하여 분산 처리
-- 언어: Rust
+### 🛰️ [TON618] (TaskQueue)
+- Role: DB에서 데이터를 읽고, 메시지(Task)를 생성하여 분산 처리
+- Stack: Rust
 - 메시지 포맷: 초기엔 JSON 사용, 구조 안정 후 ProtoBuf 전환 예정
 - 메시지 생성 시점: cron 기반
 - 중복 처리 방지: 추후 설계 예정
 - Task 구조: `TaskMessage` 등으로 명확히 정의
 - 데이터 소스 추상화: `TaskDataSource` 트레잇으로 구현체 교체 가능 (예: JSON, SQLite 등)
 
-### 🌌 Worker (Laniakea)
-- 역할: Task 처리
-- 언어: Rust
-- 각 인스턴스 이름: 은하 이름 사용 (예: Andromeda, M87)
-- 처리 결과는 Redis에 저장
+### 🌌 [Laniakea] (Worker)
+- Role: Task 처리
+- Stack: Rust
+- Instance name: Use glaxy name (ex: Andromeda, M87)
+- Save processing results to 🛢️Redis
 
 ---
 
@@ -42,9 +42,9 @@
 
 ---
 
-## 🧱 기술 스택 및 구성
+## 🧱 Tech stack and configuration
 
-| 구성 요소 | 기술 |
+| Component | Stack |
 |-----------|------|
 | Scraper | Python |
 | TaskQueue ([TON618]) | Rust |
@@ -54,8 +54,8 @@
 
 ---
 
-## 🧠 설계 철학
-- 메시지는 Command가 아닌 Task 개념으로 정리
+## 🧠 Design philosophy
+- 메시지는 Command가 아닌 Task 개념으로 정리 (주체의 차이)
 - 구성 요소 간 경계를 명확히 함
 - 모든 구성 요소에 세계관 기반 코드네임 사용
 - 작업 구조는 분산형이지만, 구현은 단순함을 유지
@@ -63,13 +63,25 @@
 
 ---
 
-## 📂 GitHub / 협업 전략
-- GitHub 사용 (초기: mono repo 구성)
-- GitHub Issues + GitHub Projects + Notion 조합으로 프로젝트 관리
-- 커밋 메시지에 `[hubble]`, `Closes #42` 등의 형식 사용
-- Discord ↔ GitHub 연동 계획 있음
+## 📂 GitHub strategy
+- GitHub (beginning: mono repo structure)
+- GitHub Issues + GitHub Projects
+- Commit message  `[hubble]`, `Closes #42` format
+- Discord ↔ GitHub Link plan available
 
 ---
 
-## 🔖 기타 용어 정리
-- **세션 마이그레이션:** 세션 이동 시 지금까지의 핵심 프로젝트 내용을 요약해 문서화하는 것
+## 🎋 Git branch strategy
+- main: Stay deployable at all times, manage release tags
+
+- feature/: feature/[module/]function name (ex: feature/dysonsphere/task-crud), Delete after merge to main upon completion
+
+- hotfix/: hotfix/[module/]hotfix name (ex: hotfix/ton618/schema-fix), After modification, merge to main + retag
+
+- release/ (Optional): QA, document, and final debugging with release/vX.Y.Z → merge to main + tag
+
+---
+
+## 🔖 Other terminology
+- **Session migration:** Documentation of key projects so far as the session moves
+
