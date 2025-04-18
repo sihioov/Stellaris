@@ -6,6 +6,7 @@ use crate::datasource::TaskDataSource;
 use anyhow::{Result, Context};
 use serde_json::Value;
 use dysonsphere::message::TaskMessage;
+use dysonsphere::status::TaskStatus;
 
 pub struct FileDataSource {
     pub path: PathBuf,
@@ -40,21 +41,14 @@ impl TaskDataSource for FileDataSource {
         let all_tasks: Vec<TaskMessage> = serde_json::from_str(&raw)
             .with_context(|| "failed to parse task JSON")?;
 
-        let pending_tasks = all_tasks
+        let pending_tasks: Vec<_> = all_tasks
             .into_iter()
-            .filter(|task| {
-                if let Some(Value::String(status)) = task.meta.as_ref().and_then(|m| m.get("status")) {
-                    status != "processed"
-                } else {
-                    true
-                }
-            })
+            .filter(|task| !matches!(task.meta.status, TaskStatus::Processed))
             .collect();
 
         Ok(pending_tasks)
     }
-
-
+    
     async fn mark_processed(&self, task_id: &str) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
 
@@ -63,11 +57,7 @@ impl TaskDataSource for FileDataSource {
 
         for task in &mut tasks {
             if task.task_id == task_id {
-                let mut meta = task.meta.take().unwrap_or_else(|| Value::Object(Default::default()));
-                if let Value::Object(ref mut map) = meta {
-                    map.insert("status".to_string(), Value::String("processed".to_string()));
-                }
-                task.meta = Some(meta);
+                task.meta.status = TaskStatus::Processed;
             }
         }
 
