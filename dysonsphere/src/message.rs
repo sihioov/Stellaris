@@ -5,6 +5,11 @@ use crate::status::TaskStatus;
 /// Task message struct.
 /// Used ton618 → laniakea communication format.
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum TaskType {
+    NewsA,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
     pub status: TaskStatus,
@@ -26,6 +31,7 @@ impl Default for TaskMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMessage {
     pub task_id: String,
+    pub task_type: TaskType,
     pub payload: String,
     pub meta: TaskMeta,
 }
