@@ -5,8 +5,8 @@ use cron::Schedule;
 use std::str::FromStr;
 
 pub enum ScheduleType {
-    Fixed(Duration),            // 고정 간격: 10초마다 등
-    Cron(Schedule),             // cron 표현식 기반: 매일 3시 등
+    Fixed(Duration),
+    Cron(Schedule),
 }
 
 pub struct Scheduler {
@@ -14,14 +14,13 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    /// 일정 주기
     pub fn fixed(interval: Duration) -> Self {
         Self {
             schedule_type: ScheduleType::Fixed(interval),
         }
     }
 
-    /// cron 기반
+    /// cron
     pub fn cron(expr: &str) -> anyhow::Result<Self> {
         let schedule = Schedule::from_str(expr)?;
         Ok(Self {
@@ -29,7 +28,6 @@ impl Scheduler {
         })
     }
 
-    /// 다음 실행까지 대기
     pub async fn wait_for_next(&self) {
         match &self.schedule_type {
             ScheduleType::Fixed(duration) => {

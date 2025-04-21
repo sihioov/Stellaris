@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use crate::datasource::TaskDataSource;
 use anyhow::{Result, Context};
 use serde_json::Value;
 use dysonsphere::message::TaskMessage;
 use dysonsphere::status::TaskStatus;
+use crate::datasource::TaskDataSource;
 
 pub struct FileDataSource {
     pub path: PathBuf,
@@ -31,10 +31,11 @@ impl TaskDataSource for FileDataSource {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 log::warn!("File not found: {:?}. Returning empty list.", self.path);
-                return Ok(vec![]);  // 🔥 파일 없어도 처리 가능
+
+                return Ok(vec![]);
             }
             Err(e) => {
-                return Err(e).context(format!("failed to read file: {:?}", self.path));
+                return Err(e).context(format!("Failed to read file: {:?}", self.path));
             }
         };
 

@@ -19,22 +19,22 @@ async fn main() -> Result<()> {
     let datasource = FileDataSource::new("tasks.json");
 
     loop {
-        log::info!("🔍 Checking for pending tasks...");
+        log::info!("Checking for pending tasks...");
 
         let tasks = datasource.fetch_pending().await?;
 
         if tasks.is_empty() {
-        log::info!("⏸ No pending tasks.");
+            log::info!("⏸ No pending tasks.");
         } else {
-        for task in &tasks {
-        log::info!("✅ Got task: {}", task.task_id);
-        // 작업 처리 예시
-        // send_to_laniakea(task).await;
-        }
+            for task in &tasks {
+                log::info!("Got task: {}", task.task_id);
+                // Task processing example
+                // send_to_laniakea(task).await;
+            }
 
-        for task in &tasks {
-        datasource.mark_processed(&task.task_id).await?;
-        }
+            for task in &tasks {
+                datasource.mark_processed(&task.task_id).await?;
+            }
         }
 
         let scheduler = Scheduler::fixed(Duration::from_secs(10));
