@@ -3,6 +3,7 @@ mod datasource;
 mod rdb;
 mod nosql;
 mod schedule;
+mod job;
 
 use dysonsphere::message::TaskMessage;
 use std::time::Duration;

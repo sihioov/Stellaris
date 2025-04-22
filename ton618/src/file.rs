@@ -49,7 +49,7 @@ impl TaskDataSource for FileDataSource {
 
         Ok(pending_tasks)
     }
-    
+
     async fn mark_processed(&self, task_id: &str) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
 

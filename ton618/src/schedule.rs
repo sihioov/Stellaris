@@ -20,7 +20,6 @@ impl Scheduler {
         }
     }
 
-    /// cron
     pub fn cron(expr: &str) -> anyhow::Result<Self> {
         let schedule = Schedule::from_str(expr)?;
         Ok(Self {
