@@ -1,15 +1,13 @@
-// job/traits.rs
+//! scheduler/traits.rs
 
-use std::time::Instant;
 use async_trait::async_trait;
 use anyhow::Result;
+use std::borrow::Cow;
 
 #[async_trait]
 pub trait Job: Send + Sync {
-    fn name(&self) -> &'static str;
-
-    //fn next_due(&self) -> Instant;
-
+    fn name(&self) -> Cow<'static, str>;
     async fn execute(&mut self) -> Result<()>;
+    fn max_retries(&self) -> usize { 0 }
 }
 

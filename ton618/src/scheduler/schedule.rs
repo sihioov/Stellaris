@@ -1,3 +1,4 @@
+//! scheduler/schedule.rs
 
 use std::time::Duration;
 use chrono::Utc;
@@ -28,10 +29,10 @@ impl Schedule {
                 expr.upcoming(Utc)
                     .next()
                     .map(|next| {
-                        let delta = next - now;              // chrono::Duration
-                        delta.to_std().unwrap_or_default()   // std::time::Duration
+                        let delta = next - now;     // chrono::Duration
+                        delta.to_std().unwrap_or_default()      // std::time::Duration
                     })
-                    .unwrap_or_default()                   // Option<Duration> → Duration
+                    .unwrap_or_default()        // Option<Duration> → Duration
             }
         }
     }

@@ -1,4 +1,5 @@
+//! scheduler/mod.rs
 mod queue;
 mod schedule;
-mod traits;
+mod job;
 mod runner;
