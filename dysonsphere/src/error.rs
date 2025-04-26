@@ -1,5 +1,4 @@
 use std::fmt;
-
 #[derive(Debug)]
 pub enum StellarisError {
     DatabaseError(String),
@@ -7,6 +6,8 @@ pub enum StellarisError {
     IoError(String),
     SerdeError(String),
     DefaultError,
+    MQError(String),
+    JsonError(String),
 }
 
 impl fmt::Display for StellarisError {
@@ -17,6 +18,8 @@ impl fmt::Display for StellarisError {
             StellarisError::IoError(msg) => write!(f, "I/O error: {}", msg),
             StellarisError::SerdeError(msg) => write!(f, "Serialization error: {}", msg),
             StellarisError::DefaultError => write!(f, "Default error"),
+            StellarisError::MQError(msg) => write!(f, "MQ error: {}", msg),
+            StellarisError::JsonError(msg) => write!(f, "JSON error: {}", msg),
         }
     }
 }
@@ -33,6 +36,12 @@ impl From<std::io::Error> for StellarisError {
 impl From<serde_json::Error> for StellarisError {
     fn from(err: serde_json::Error) -> Self {
         StellarisError::SerdeError(err.to_string())
+    }
+}
+
+impl From<lapin::Error> for StellarisError {
+    fn from(error: lapin::Error) -> Self {
+        StellarisError::MQError(format!("RabbitMQ error: {}", error))
     }
 }
 
