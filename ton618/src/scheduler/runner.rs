@@ -18,7 +18,7 @@ where
     _marker: PhantomData<J>,
 }
 
-impl<J, Q>
+impl<J, Q> Runner<J, Q>
 where
     J: Job,
     Q: JobQueue<J>,
@@ -37,28 +37,24 @@ where
                 let now = Instant::now();
 
                 if next_run_time <= now {
-                    // Time to run the job
-                    if let Some(mut sj) = self.queue.dequeue() {
-                        // Execute the job
-                        if let Err(e) = sj.job.execute().await {
-                            eprintln!("Job '{}' error: {:?}", sj.job.name(), e);
-                            // Consider what to do on error: retry, drop, log, etc.
+                    /// Time to run the job
+                    if let Some(mut schedule_job) = self.queue.dequeue() {
+                        /// Execute the job
+                        if let Err(e) = schedule_job.job.execute().await {
+                            /// error: retry, drop, log, etc.
+                            eprintln!("Job '{}' error: {:?}", schedule_job.job.name(), e);
                         }
 
-                        // Update next run time and re-enqueue
-                        // Ensure the schedule is still valid and provides a next delay
-                        // Re-calculate next_run based on the *current* time after execution
-                        sj.update_next_run();
-                        self.queue.enqueue(sj);
+                        schedule_job.update_next_run();
+                        self.queue.enqueue(schedule_job);
                     }
-                    // Since we just processed a job, check immediately for the next one
-                    continue; // Skip the sleep and re-evaluate the queue top
+                    continue; //< Skip the sleep and re-evaluate the queue top
                 } else {
-                    // Wait until the next job's scheduled time
+                    /// Wait until the next jobs scheduled time
                     sleep_duration = next_run_time.saturating_duration_since(now);
                 }
             }
-            // If queue is empty or next job is in the future, sleep.
+            /// If queue is empty or next job is in the future, sleep.
             sleep(sleep_duration).await;
         }
     }

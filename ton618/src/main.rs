@@ -28,9 +28,9 @@ async fn main() -> Result<()> {
             log::info!("⏸ No pending tasks.");
         } else {
             for task in &tasks {
+                /// Task processing example
+                /// send_to_laniakea(task).await;
                 log::info!("Got task: {}", task.task_id);
-                // Task processing example
-                // send_to_laniakea(task).await;
             }
 
             for task in &tasks {
