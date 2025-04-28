@@ -2,11 +2,8 @@
 
 use dysonsphere::db::{TaskTable, FileTaskTable};
 use dysonsphere::message::{TaskMessage, TaskMeta, TaskType};
-use dysonsphere::error::{Result, StellarisError};
+use dysonsphere::error::{Result};
 use std::path::PathBuf;
-use dysonsphere::message::TaskType::NewsA;
-//use dysonsphere::status::TaskStatus;
-//use dysonsphere::error::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {

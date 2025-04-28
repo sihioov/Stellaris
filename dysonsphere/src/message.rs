@@ -1,11 +1,12 @@
+//! Task message struct.
+//! Used ton618 → laniakea communication format.
+
 use serde::{Deserialize, Serialize};
 //use serde_json::Value;
 use chrono::{DateTime, Utc};
 use crate::status::TaskStatus;
-/// Task message struct.
-/// Used ton618 → laniakea communication format.
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum TaskType {
     NewsA,
 }

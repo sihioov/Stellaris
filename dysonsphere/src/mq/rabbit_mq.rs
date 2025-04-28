@@ -1,4 +1,3 @@
-use std::arch::aarch64::{int32x2_t, uint8x8_t};
 /// dysonsphere/src/mq/rabbit_mq.rs
 
 use crate::error::StellarisError;
@@ -45,16 +44,16 @@ impl MessageQueue for RabbitMQClient {
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Receiver<TaskMessage>, Self::Error> {
-        /// Create MPSC channel
+        // Create MPSC channel
         let (tx, rx) = channel(100);
 
-        /// Declare queue as topic
+        // Declare queue as topic
         let queue = self.channel.queue_declare(
                 topic,
                 QueueDeclareOptions::default(),
                 FieldTable::default()).await?;
 
-        /// Create consumer for subscribing queue
+        // Create consumer for subscribing queue
         let mut consumer = self.channel.basic_consume(
             queue.name().as_str(),
             "",
@@ -62,7 +61,7 @@ impl MessageQueue for RabbitMQClient {
             FieldTable::default(),
         ).await?;
 
-        /// 백그라운드 테스크로 delivery + TaskMessage 변환 -> 채널 전송
+        // 백그라운드 테스크로 delivery + TaskMessage 변환 -> 채널 전송
         tokio::spawn(async move {
             while let Some(Ok(delivery)) = consumer.next().await {
                 // lapin::message::Delivery가 바로 오기 때문에
