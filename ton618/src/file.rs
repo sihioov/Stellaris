@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use anyhow::{Result, Context};
+use dysonsphere::error::{Result, StellarisError};
 use serde_json::Value;
 use dysonsphere::message::TaskMessage;
 use dysonsphere::status::TaskStatus;
@@ -35,12 +35,14 @@ impl TaskDataSource for FileDataSource {
                 return Ok(vec![]);
             }
             Err(e) => {
-                return Err(e).context(format!("Failed to read file: {:?}", self.path));
+                return Err(StellarisError::IoError(format!("Failed to read file: {:?}: {}", self.path, e)));
             }
         };
 
-        let all_tasks: Vec<TaskMessage> = serde_json::from_str(&raw)
-            .with_context(|| "failed to parse task JSON")?;
+        let all_tasks: Vec<TaskMessage> = match serde_json::from_str(&raw) {
+            Ok(tasks) => tasks,
+            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to parse task JSON: {}", e))),
+        };
 
         let pending_tasks: Vec<_> = all_tasks
             .into_iter()
@@ -53,18 +55,64 @@ impl TaskDataSource for FileDataSource {
     async fn mark_processed(&self, task_id: &str) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
 
-        let raw = fs::read_to_string(&self.path)?;
-        let mut tasks: Vec<TaskMessage> = serde_json::from_str(&raw)?;
+        let raw = match fs::read_to_string(&self.path) {
+            Ok(content) => content,
+            Err(e) => return Err(StellarisError::IoError(format!("Failed to read file: {:?}: {}", self.path, e))),
+        };
 
+        let mut tasks: Vec<TaskMessage> = match serde_json::from_str(&raw) {
+            Ok(tasks) => tasks,
+            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to parse task JSON: {}", e))),
+        };
+
+        let mut found = false;
         for task in &mut tasks {
             if task.task_id == task_id {
                 task.meta.status = TaskStatus::Processed;
+                found = true;
+                break;
             }
         }
 
-        let new_data = serde_json::to_string_pretty(&tasks)?;
-        fs::write(&self.path, new_data.as_bytes())?;
+        if !found {
+            return Err(StellarisError::NotFound(format!("Task with id {} not found", task_id)));
+        }
 
-        Ok(())
+        let updated = match serde_json::to_string_pretty(&tasks) {
+            Ok(json) => json,
+            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to serialize tasks: {}", e))),
+        };
+
+        match fs::write(&self.path, updated) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(StellarisError::IoError(format!("Failed to write to file: {:?}: {}", self.path, e))),
+        }
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<TaskMessage> {
+        let _guard = self.lock.lock().unwrap();
+
+        let raw = match fs::read_to_string(&self.path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StellarisError::NotFound(format!("File not found: {:?}", self.path)));
+            }
+            Err(e) => {
+                return Err(StellarisError::IoError(format!("Failed to read file: {:?}: {}", self.path, e)));
+            }
+        };
+
+        let all_tasks: Vec<TaskMessage> = match serde_json::from_str(&raw) {
+            Ok(tasks) => tasks,
+            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to parse task JSON: {}", e))),
+        };
+
+        for task in all_tasks {
+            if task.task_id == task_id {
+                return Ok(task);
+            }
+        }
+
+        Err(StellarisError::NotFound(format!("Task with id {} not found", task_id)))
     }
 }

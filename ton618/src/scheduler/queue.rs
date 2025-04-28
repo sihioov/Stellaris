@@ -56,8 +56,10 @@ impl<J: Job> Eq for ScheduledJob<J> {}
 pub trait JobQueue<J: Job>: Send + Sync {
     /// Enqueue a scheduled job into the priority queue.
     fn enqueue(&self, job: ScheduledJob<J>);
+
     /// Dequeue the scheduled job with the earliest next_run.
     fn dequeue(&self) -> Option<ScheduledJob<J>>;
+    
     /// Peek the next_run time of the highest priority job without removing it.
     fn peek_next_run(&self) -> Option<Instant>;
 }

@@ -2,8 +2,8 @@ mod file;
 mod datasource;
 mod rdb;
 mod nosql;
-mod schedule;
 mod scheduler;
+mod task;
 
 use dysonsphere::message::TaskMessage;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use tokio::time::sleep;
 use anyhow::Result;
 use crate::file::FileDataSource;
 use crate::datasource::TaskDataSource;
-use crate::schedule::Scheduler;
+use crate::scheduler::Schedule;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -28,8 +28,8 @@ async fn main() -> Result<()> {
             log::info!("⏸ No pending tasks.");
         } else {
             for task in &tasks {
-                /// Task processing example
-                /// send_to_laniakea(task).await;
+                // Task processing example
+                // send_to_laniakea(task).await;
                 log::info!("Got task: {}", task.task_id);
             }
 
@@ -38,8 +38,9 @@ async fn main() -> Result<()> {
             }
         }
 
-        let scheduler = Scheduler::fixed(Duration::from_secs(10));
-        scheduler.wait_for_next().await;
+        // 다음 실행 예약
+        let schedule = Schedule::fixed(Duration::from_secs(10));
+        let delay = schedule.next_delay();
+        sleep(delay).await;
     }
-
 }
