@@ -175,11 +175,7 @@ impl TaskDispatcher for RabbitMQTaskDispatcher {
     }
     
     async fn check_task_status(&self, task_id: &str) -> Result<TaskStatus> {
-        // 파일 저장소에서 작업 상태 조회
-        let data_source = &self.data_source;
-        
-        // anyhyw::Result를 dysonsphere::error::Result로 변환
-        match data_source.get_task(task_id).await {
+        match self.data_source.get_task(task_id).await {
             Ok(task) => Ok(task.meta.status),
             Err(err) => {
                 let error_msg = format!("Failed to get task status: {}", err);
