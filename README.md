@@ -81,6 +81,12 @@ Stellaris는 대규모 데이터를 효율적으로 수집, 처리, 분석하기
 - 명확한 공용 인터페이스 정의
 - 다양한 구현체 지원을 위한 트레잇 기반 설계
 
+### Canopus (AI development orchestration layer)
+
+Canopus is an application layer built on top of Stellaris. It keeps AI development orchestration outside the core engine by using ports and adapters for task backends, agent runtimes, tool gateways, artifact storage, and intake surfaces.
+
+The first Canopus milestone is a Local Patch MVP: a CLI request creates a local branch, simulates bounded agent work, runs local checks, and stores plan, diff, test, and review artifacts without pushing or creating a PR.
+
 ## 🔄 데이터 흐름 및 작업 처리 과정
 
 1. **데이터 수집 단계**:

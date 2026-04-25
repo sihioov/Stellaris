@@ -9,6 +9,7 @@ use crate::status::TaskStatus;
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum TaskType {
     NewsA,
+    Custom(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
