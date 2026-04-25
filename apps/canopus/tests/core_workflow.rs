@@ -51,4 +51,5 @@ fn artifact_kind_has_stable_file_names() {
     assert_eq!(ArtifactKind::Diff.file_name(), "diff.md");
     assert_eq!(ArtifactKind::TestResult.file_name(), "test-result.md");
     assert_eq!(ArtifactKind::Review.file_name(), "review.md");
+    assert_eq!(ArtifactKind::RuntimeLog.file_name(), "runtime-log.md");
 }

@@ -20,8 +20,7 @@ impl WorkflowState {
                 | (WorkflowState::Executing, WorkflowState::Checking)
                 | (WorkflowState::Checking, WorkflowState::Reviewed)
                 | (WorkflowState::Reviewed, WorkflowState::Completed)
-                | (_, WorkflowState::Failed)
-        );
+        ) || (next == WorkflowState::Failed && self != WorkflowState::Failed);
 
         if allowed {
             Ok(next)
