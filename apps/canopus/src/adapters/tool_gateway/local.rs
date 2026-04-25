@@ -64,7 +64,8 @@ impl ToolGateway for LocalToolGateway {
             .lines()
             .filter(|line| {
                 let path = line.get(3..).unwrap_or("").trim();
-                !(path == ".canopus" || path.starts_with(".canopus/") || path.starts_with(".canopus\\"))
+                // git porcelain always uses forward slashes; exclude .canopus state directory
+                !(path == ".canopus" || path.starts_with(".canopus/"))
             })
             .collect::<Vec<_>>()
             .join("\n");

@@ -26,10 +26,13 @@ fn creates_branch_and_reports_diff_names() {
     gateway.ensure_clean_worktree(&repo).unwrap();
     gateway.create_branch(&repo, "canopus/test").unwrap();
     fs::write(repo.join("canopus-mock-output.txt"), "changed\n").unwrap();
+    fs::create_dir_all(repo.join(".canopus")).unwrap();
+    fs::write(repo.join(".canopus/state.json"), "{}").unwrap();
     let diff = gateway.changed_files(&repo).unwrap();
 
     assert_eq!(diff.status, 0);
     assert!(diff.stdout.contains("canopus-mock-output.txt"));
+    assert!(!diff.stdout.contains(".canopus"));
     let _ = fs::remove_dir_all(repo);
 }
 
