@@ -5,6 +5,8 @@ use dysonsphere::message::{TaskMessage, TaskMeta, TaskType};
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
+/// Synchronous adapter. `submit` drives its own Tokio runtime;
+/// do not call from within an existing Tokio runtime context.
 pub struct StellarisTaskBackend {
     table: FileTaskTable,
     runtime: Runtime,
@@ -12,7 +14,10 @@ pub struct StellarisTaskBackend {
 
 impl StellarisTaskBackend {
     pub fn new(path: PathBuf) -> CanopusResult<Self> {
-        let runtime = Runtime::new().map_err(|err| CanopusError::Backend(err.to_string()))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| CanopusError::Backend(err.to_string()))?;
         Ok(Self {
             table: FileTaskTable::new(path),
             runtime,
