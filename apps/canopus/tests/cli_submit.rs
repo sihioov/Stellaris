@@ -35,6 +35,8 @@ fn submit_creates_branch_patch_backend_task_and_artifacts() {
     assert!(repo.join("canopus-mock-output.txt").exists());
     assert!(state.join("artifacts").join("TASK-1-plan").join("plan.md").exists());
     assert!(state.join("artifacts").join("TASK-2-code").join("runtime-log.md").exists());
+    assert!(state.join("artifacts").join("TASK-2-code").join("diff.md").exists());
+    assert!(state.join("artifacts").join("TASK-2-code").join("test-result.md").exists());
     assert!(state.join("artifacts").join("TASK-3-review").join("review.md").exists());
     assert!(state.join("tasks.json").exists());
 

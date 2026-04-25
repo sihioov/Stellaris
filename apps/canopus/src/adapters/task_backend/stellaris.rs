@@ -2,6 +2,7 @@ use crate::core::{AgentTask, CanopusError, CanopusResult};
 use crate::ports::{SubmittedTask, TaskBackend};
 use dysonsphere::db::{FileTaskTable, TaskTable};
 use dysonsphere::message::{TaskMessage, TaskMeta, TaskType};
+use std::fs;
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
@@ -14,6 +15,11 @@ pub struct StellarisTaskBackend {
 
 impl StellarisTaskBackend {
     pub fn new(path: PathBuf) -> CanopusResult<Self> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

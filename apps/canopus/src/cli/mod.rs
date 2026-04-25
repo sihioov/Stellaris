@@ -21,7 +21,7 @@ pub fn run(args: Vec<String>) -> CanopusResult<()> {
 
 fn submit(args: &[String]) -> CanopusResult<()> {
     let parsed = SubmitArgs::parse(args)?;
-    std::fs::create_dir_all(&parsed.state)?;
+    // Note: changed_files excludes .canopus/ paths; --state must resolve under .canopus/ for MVP.
     let agenda = Agenda::new_with_id("CANOPUS-1", parsed.request)?;
     let branch = format!("canopus/{}", agenda.id);
     let artifact_store = LocalFileArtifactStore::new(parsed.state.join("artifacts"));
