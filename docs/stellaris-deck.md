@@ -47,6 +47,9 @@ stellaris/                         ← 🛰️ Monorepo Root (Cargo workspace)
 │   │   └── main.rs                ← 기본 진입점 [구현됨]
 │   └── Cargo.toml                 ← hubble 크레이트 설정 [구현됨]
 │
+├── apps/
+│   └── canopus/                 ← portable AI development orchestration layer [MVP]
+│
 ├── docs/                          ← 📚 프로젝트 문서 [구현됨]
 │   ├── stellaris_summary.md       ← 프로젝트 개요 및 구조 [구현됨]
 │   ├── stellaris-deck.md          ← 디렉토리 구조 문서 [구현됨]
