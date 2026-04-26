@@ -1,3 +1,5 @@
+<!-- Generated: 2026-01-15 | Updated: 2026-04-25 -->
+
 # STELLARIS PROJECT KNOWLEDGE BASE
 
 **Generated:** 2026-01-15 18:26:09 UTC

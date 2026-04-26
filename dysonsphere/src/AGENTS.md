@@ -1,3 +1,6 @@
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-01-15 | Updated: 2026-04-25 -->
+
 # DYNSPHERE CORE LIBRARY
 
 **Generated:** 2026-01-15 18:26:09 UTC
