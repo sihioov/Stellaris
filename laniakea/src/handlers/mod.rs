@@ -10,6 +10,9 @@ pub async fn dispatch(task: &TaskMessage) -> Result<()> {
     match &task.task_type {
         TaskType::NewsA => news_a::handle(task).await,
         TaskType::Custom(label) => custom::handle(task, label).await,
+        TaskType::Bug | TaskType::Security | TaskType::TestCoverage | TaskType::UXImprovement => {
+            custom::handle(task, "canopus.agent").await
+        }
     }
 }
 
@@ -37,5 +40,21 @@ mod tests {
     async fn dispatch_custom_returns_ok() {
         let task = make_task(TaskType::Custom("foo".to_string()));
         assert!(dispatch(&task).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dispatch_maintenance_types_are_routed() {
+        // Verify the match is exhaustive and routing doesn't panic.
+        // Actual canopus execution is not available in the test env, so we
+        // only assert the function returns a Result without panicking.
+        for task_type in [
+            TaskType::Bug,
+            TaskType::Security,
+            TaskType::TestCoverage,
+            TaskType::UXImprovement,
+        ] {
+            let task = make_task(task_type);
+            let _ = dispatch(&task).await;
+        }
     }
 }
