@@ -17,7 +17,7 @@ fn make_task(id: &str, task_type: TaskType) -> TaskMessage {
 }
 
 #[tokio::test]
-async fn file_mode_processes_all_pending_tasks_exactly_once() {
+async fn file_mode_processes_all_pending_tasks_to_processed() {
     let file = tempfile::NamedTempFile::new().unwrap();
     let tasks = vec![
         make_task("T1", TaskType::NewsA),
