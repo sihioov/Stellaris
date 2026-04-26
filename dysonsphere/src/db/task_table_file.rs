@@ -115,4 +115,14 @@ impl TaskTable for FileTaskTable {
 
         Ok(pending_tasks)
     }
+
+    async fn fetch_dispatched(&self) -> Result<Vec<TaskMessage>> {
+        let _guard = self.lock.lock().unwrap();
+        let tasks = self.read_tasks()?;
+        let dispatched_tasks = self.read_tasks()?.into_iter()
+            .filter(|t| matches!(t.meta.status, TaskStatus::Dispatched))
+            .collect();
+
+        Ok(dispatched_tasks)
+    }
 }

@@ -17,4 +17,6 @@ pub trait TaskTable {
     async fn delete(&self, task_id: &str) -> Result<()>;
 
     async fn fetch_pending(&self) -> Result<Vec<TaskMessage>>;
+
+    async fn fetch_dispatched(&self) -> Result<Vec<TaskMessage>>;
 }
