@@ -34,6 +34,9 @@ impl FileTaskTable {
         Ok(tasks)
     }
 
+    // MVP limitation: atomic rename prevents torn reads but does not prevent lost-update
+    // races between multiple writer processes (TON618, Laniakea, Discord bot) sharing this
+    // file. Use cross-process file locking (fs2) or SQLite for multi-process safety.
     fn write_tasks(&self, tasks: &[TaskMessage]) -> Result<()> {
         let json = serde_json::to_string_pretty(tasks)?;
         let tmp_path = self.path.with_extension("tmp");
