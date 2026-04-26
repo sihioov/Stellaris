@@ -176,22 +176,49 @@ async def on_ready():
 
 @bot.command(name="new-project")
 async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
-    """Create Discord category + 4 channels + register in projects.json."""
+    """Create directory, git init, Discord category + 4 channels, register in projects.json."""
     if not is_authorized(ctx):
         await ctx.send("🚫 권한이 없습니다.")
         return
     if not name or not repo_path:
-        await ctx.send("사용법: `!new-project <이름> <로컬경로>`\n예: `!new-project Stellaris D:/develop/repositories/Stellaris`")
+        await ctx.send("사용법: `!new-project <이름> <로컬경로>`\n예: `!new-project my-app C:/projects/my-app`")
         return
     if not ctx.guild:
         await ctx.send("⚠️ 서버 채널에서만 사용할 수 있습니다.")
         return
 
+    steps = []
+    category = None
     try:
+        # 1. 디렉토리 생성
+        if os.path.exists(repo_path):
+            steps.append(f"📂 디렉토리 이미 존재: `{repo_path}`")
+        else:
+            os.makedirs(repo_path, exist_ok=True)
+            steps.append(f"📂 디렉토리 생성: `{repo_path}`")
+
+        # 2. git init (이미 git 레포면 skip)
+        git_dir = os.path.join(repo_path, ".git")
+        if os.path.isdir(git_dir):
+            steps.append("🔧 Git 레포지토리 이미 존재 (init skip)")
+        else:
+            import subprocess
+            result = subprocess.run(
+                ["git", "init", repo_path],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                await ctx.send(f"❌ git init 실패: {result.stderr}")
+                return
+            steps.append("🔧 `git init` 완료")
+
+        # 3. Discord 카테고리 + 채널 생성
         category = await ctx.guild.create_category(name)
         for ch_name in ("general", "planning", "development", "review"):
             await category.create_text_channel(ch_name)
+        steps.append(f"💬 Discord 카테고리 + 4채널 생성")
 
+        # 4. projects.json 등록
         data = read_projects()
         data["projects"][str(category.id)] = {
             "name": name,
@@ -199,13 +226,13 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
             "registered_at": now_iso(),
         }
         write_projects(data)
+        steps.append("📝 projects.json 등록 완료")
 
+        step_list = "\n".join(steps)
         await ctx.send(
-            f"✅ **프로젝트 생성됨**: {name}\n"
-            f"📁 카테고리 ID: `{category.id}`\n"
-            f"📂 Repo: `{repo_path}`\n"
-            f"📋 채널: #general, #planning, #development, #review\n\n"
-            f"이제 #{name.lower()}-development 채널에서 `!run <요청>` 으로 작업을 시작하세요."
+            f"✅ **프로젝트 생성 완료**: {name}\n\n"
+            f"{step_list}\n\n"
+            f"이제 #development 채널에서 `!run <요청>` 으로 작업을 시작하세요."
         )
     except discord.Forbidden:
         await ctx.send("❌ 채널 생성 권한(Manage Channels)이 없습니다. 봇 권한을 확인해주세요.")
@@ -221,6 +248,12 @@ async def cmd_register(ctx, *, repo_path: str = None):
         return
     if not repo_path:
         await ctx.send("사용법: `!register <로컬경로>`\n예: `!register D:/develop/repositories/Stellaris`")
+        return
+    if not os.path.isdir(repo_path):
+        await ctx.send(f"❌ 경로가 존재하지 않습니다: `{repo_path}`\n신규 프로젝트라면 `!new-project <이름> <경로>` 를 사용하세요.")
+        return
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        await ctx.send(f"❌ Git 레포지토리가 아닙니다: `{repo_path}`\n`git init`을 먼저 실행하거나 `!new-project` 를 사용하세요.")
         return
     if not ctx.guild or not hasattr(ctx.channel, "category") or not ctx.channel.category:
         await ctx.send("⚠️ 카테고리가 있는 채널에서만 사용할 수 있습니다.")
