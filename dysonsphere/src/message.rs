@@ -10,6 +10,11 @@ use chrono::{DateTime, Utc};
 pub enum TaskType {
     NewsA,
     Custom(String),
+    // 유지보수 모드 유형
+    Bug,
+    Security,
+    TestCoverage,
+    UXImprovement,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
