@@ -1,8 +1,8 @@
 // main.rs
 
-use dysonsphere::db::{TaskTable, FileTaskTable};
+use dysonsphere::db::{FileTaskTable, TaskTable};
+use dysonsphere::error::Result;
 use dysonsphere::message::{TaskMessage, TaskMeta, TaskType};
-use dysonsphere::error::{Result};
 use std::path::PathBuf;
 
 #[tokio::main]

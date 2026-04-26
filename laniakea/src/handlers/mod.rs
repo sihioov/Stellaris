@@ -1,7 +1,10 @@
 pub mod custom;
 pub mod news_a;
 
-use dysonsphere::{error::Result, message::{TaskMessage, TaskType}};
+use dysonsphere::{
+    error::Result,
+    message::{TaskMessage, TaskType},
+};
 
 pub async fn dispatch(task: &TaskMessage) -> Result<()> {
     match &task.task_type {

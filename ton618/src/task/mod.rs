@@ -2,5 +2,4 @@
 
 pub mod dispatcher;
 
-
-pub use dispatcher::{TaskDispatcher, RabbitMQTaskDispatcher, WorkerInfo, WorkerStatus}; 
+pub use dispatcher::{RabbitMQTaskDispatcher, TaskDispatcher, WorkerInfo, WorkerStatus};

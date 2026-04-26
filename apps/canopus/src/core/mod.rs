@@ -3,5 +3,5 @@ pub mod types;
 pub mod workflow;
 
 pub use error::{CanopusError, CanopusResult};
-pub use types::{AgentRole, AgentTask, Agenda, Artifact, ArtifactKind, AgentRunResult};
+pub use types::{Agenda, AgentRole, AgentRunResult, AgentTask, Artifact, ArtifactKind};
 pub use workflow::WorkflowState;

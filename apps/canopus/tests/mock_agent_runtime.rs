@@ -1,5 +1,5 @@
 use canopus::adapters::agent_runtime::MockAgentRuntime;
-use canopus::core::{AgentRole, AgentTask, Agenda, ArtifactKind};
+use canopus::core::{Agenda, AgentRole, AgentTask, ArtifactKind};
 use canopus::ports::{AgentContext, AgentRuntime};
 use std::fs;
 
@@ -17,7 +17,14 @@ fn planner_returns_plan_artifact() {
     let task = AgentTask::for_agenda("TASK-PLAN", &agenda, AgentRole::Planner);
     let runtime = MockAgentRuntime;
 
-    let result = runtime.run(&task, &AgentContext { repo_path: repo.clone() }).unwrap();
+    let result = runtime
+        .run(
+            &task,
+            &AgentContext {
+                repo_path: repo.clone(),
+            },
+        )
+        .unwrap();
 
     assert_eq!(result.task_id, "TASK-PLAN");
     assert_eq!(result.artifacts[0].kind, ArtifactKind::Plan);
@@ -32,7 +39,14 @@ fn coder_runtime_creates_a_repo_file_for_diff_testing() {
     let task = AgentTask::for_agenda("TASK-CODE", &agenda, AgentRole::Coder);
     let runtime = MockAgentRuntime;
 
-    let result = runtime.run(&task, &AgentContext { repo_path: repo.clone() }).unwrap();
+    let result = runtime
+        .run(
+            &task,
+            &AgentContext {
+                repo_path: repo.clone(),
+            },
+        )
+        .unwrap();
 
     assert!(repo.join("canopus-mock-output.txt").exists());
     assert_eq!(result.artifacts[0].kind, ArtifactKind::RuntimeLog);

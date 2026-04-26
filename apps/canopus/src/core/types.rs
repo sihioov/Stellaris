@@ -11,7 +11,9 @@ impl Agenda {
     pub fn new_with_id(id: impl Into<String>, request: impl Into<String>) -> CanopusResult<Self> {
         let request = request.into();
         if request.trim().is_empty() {
-            return Err(CanopusError::InvalidInput("request must not be empty".to_string()));
+            return Err(CanopusError::InvalidInput(
+                "request must not be empty".to_string(),
+            ));
         }
 
         Ok(Self {

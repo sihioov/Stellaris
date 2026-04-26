@@ -8,7 +8,7 @@ pub trait TaskDataSource: Send + Sync {
 
     /// Mark a specific task_id as completed processing.
     async fn mark_processed(&self, task_id: &str) -> Result<()>;
-    
+
     /// Get a specific task by its ID
     async fn get_task(&self, task_id: &str) -> Result<TaskMessage>;
 }

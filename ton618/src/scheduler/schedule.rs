@@ -1,13 +1,13 @@
 //! scheduler/schedule.rs
 
-use std::time::Duration;
 use chrono::Utc;
 use cron::Schedule as CronExpr;
 use std::str::FromStr;
+use std::time::Duration;
 
 pub enum Schedule {
     Fixed(Duration),
-    Cron(CronExpr)
+    Cron(CronExpr),
 }
 
 impl Schedule {
@@ -29,10 +29,10 @@ impl Schedule {
                 expr.upcoming(Utc)
                     .next()
                     .map(|next| {
-                        let delta = next - now;     // chrono::Duration
-                        delta.to_std().unwrap_or_default()      // std::time::Duration
+                        let delta = next - now; // chrono::Duration
+                        delta.to_std().unwrap_or_default() // std::time::Duration
                     })
-                    .unwrap_or_default()        // Option<Duration> → Duration
+                    .unwrap_or_default() // Option<Duration> → Duration
             }
         }
     }

@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 //use serde_json::Value;
-use chrono::{DateTime, Utc};
 use crate::status::TaskStatus;
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum TaskType {
@@ -37,4 +37,3 @@ pub struct TaskMessage {
     pub payload: String,
     pub meta: TaskMeta,
 }
-

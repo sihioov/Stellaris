@@ -1,6 +1,4 @@
-use canopus::core::{
-    AgentRole, AgentTask, Agenda, ArtifactKind, WorkflowState,
-};
+use canopus::core::{Agenda, AgentRole, AgentTask, ArtifactKind, WorkflowState};
 
 #[test]
 fn agenda_rejects_empty_request() {

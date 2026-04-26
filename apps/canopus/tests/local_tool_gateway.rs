@@ -8,12 +8,32 @@ fn git_repo(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
 
-    Command::new("git").arg("init").current_dir(&root).output().unwrap();
-    Command::new("git").args(["config", "user.email", "canopus@example.invalid"]).current_dir(&root).output().unwrap();
-    Command::new("git").args(["config", "user.name", "Canopus Test"]).current_dir(&root).output().unwrap();
+    Command::new("git")
+        .arg("init")
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "canopus@example.invalid"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Canopus Test"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
     fs::write(root.join("README.md"), "# fixture\n").unwrap();
-    Command::new("git").args(["add", "README.md"]).current_dir(&root).output().unwrap();
-    Command::new("git").args(["commit", "-m", "init"]).current_dir(&root).output().unwrap();
+    Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
 
     root
 }
@@ -41,7 +61,9 @@ fn rejects_disallowed_check_command() {
     let repo = git_repo("local-tool-deny");
     let gateway = LocalToolGateway;
 
-    let err = gateway.run_check(&repo, &["powershell", "-Command", "Write-Output nope"]).unwrap_err();
+    let err = gateway
+        .run_check(&repo, &["powershell", "-Command", "Write-Output nope"])
+        .unwrap_err();
 
     assert!(err.to_string().contains("command is not allowlisted"));
     let _ = fs::remove_dir_all(repo);

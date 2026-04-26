@@ -1,12 +1,12 @@
+use crate::datasource::TaskDataSource;
 use async_trait::async_trait;
+use dysonsphere::error::{Result, StellarisError};
+use dysonsphere::message::TaskMessage;
+use dysonsphere::status::TaskStatus;
+use serde_json::Value;
 use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use dysonsphere::error::{Result, StellarisError};
-use serde_json::Value;
-use dysonsphere::message::TaskMessage;
-use dysonsphere::status::TaskStatus;
-use crate::datasource::TaskDataSource;
 
 pub struct FileDataSource {
     pub path: PathBuf,
@@ -35,13 +35,21 @@ impl TaskDataSource for FileDataSource {
                 return Ok(vec![]);
             }
             Err(e) => {
-                return Err(StellarisError::IoError(format!("Failed to read file: {:?}: {}", self.path, e)));
+                return Err(StellarisError::IoError(format!(
+                    "Failed to read file: {:?}: {}",
+                    self.path, e
+                )));
             }
         };
 
         let all_tasks: Vec<TaskMessage> = match serde_json::from_str(&raw) {
             Ok(tasks) => tasks,
-            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to parse task JSON: {}", e))),
+            Err(e) => {
+                return Err(StellarisError::SerdeError(format!(
+                    "Failed to parse task JSON: {}",
+                    e
+                )))
+            }
         };
 
         let pending_tasks: Vec<_> = all_tasks
@@ -57,12 +65,22 @@ impl TaskDataSource for FileDataSource {
 
         let raw = match fs::read_to_string(&self.path) {
             Ok(content) => content,
-            Err(e) => return Err(StellarisError::IoError(format!("Failed to read file: {:?}: {}", self.path, e))),
+            Err(e) => {
+                return Err(StellarisError::IoError(format!(
+                    "Failed to read file: {:?}: {}",
+                    self.path, e
+                )))
+            }
         };
 
         let mut tasks: Vec<TaskMessage> = match serde_json::from_str(&raw) {
             Ok(tasks) => tasks,
-            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to parse task JSON: {}", e))),
+            Err(e) => {
+                return Err(StellarisError::SerdeError(format!(
+                    "Failed to parse task JSON: {}",
+                    e
+                )))
+            }
         };
 
         let mut found = false;
@@ -75,17 +93,28 @@ impl TaskDataSource for FileDataSource {
         }
 
         if !found {
-            return Err(StellarisError::NotFound(format!("Task with id {} not found", task_id)));
+            return Err(StellarisError::NotFound(format!(
+                "Task with id {} not found",
+                task_id
+            )));
         }
 
         let updated = match serde_json::to_string_pretty(&tasks) {
             Ok(json) => json,
-            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to serialize tasks: {}", e))),
+            Err(e) => {
+                return Err(StellarisError::SerdeError(format!(
+                    "Failed to serialize tasks: {}",
+                    e
+                )))
+            }
         };
 
         match fs::write(&self.path, updated) {
             Ok(_) => Ok(()),
-            Err(e) => Err(StellarisError::IoError(format!("Failed to write to file: {:?}: {}", self.path, e))),
+            Err(e) => Err(StellarisError::IoError(format!(
+                "Failed to write to file: {:?}: {}",
+                self.path, e
+            ))),
         }
     }
 
@@ -95,16 +124,27 @@ impl TaskDataSource for FileDataSource {
         let raw = match fs::read_to_string(&self.path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(StellarisError::NotFound(format!("File not found: {:?}", self.path)));
+                return Err(StellarisError::NotFound(format!(
+                    "File not found: {:?}",
+                    self.path
+                )));
             }
             Err(e) => {
-                return Err(StellarisError::IoError(format!("Failed to read file: {:?}: {}", self.path, e)));
+                return Err(StellarisError::IoError(format!(
+                    "Failed to read file: {:?}: {}",
+                    self.path, e
+                )));
             }
         };
 
         let all_tasks: Vec<TaskMessage> = match serde_json::from_str(&raw) {
             Ok(tasks) => tasks,
-            Err(e) => return Err(StellarisError::SerdeError(format!("Failed to parse task JSON: {}", e))),
+            Err(e) => {
+                return Err(StellarisError::SerdeError(format!(
+                    "Failed to parse task JSON: {}",
+                    e
+                )))
+            }
         };
 
         for task in all_tasks {
@@ -113,6 +153,9 @@ impl TaskDataSource for FileDataSource {
             }
         }
 
-        Err(StellarisError::NotFound(format!("Task with id {} not found", task_id)))
+        Err(StellarisError::NotFound(format!(
+            "Task with id {} not found",
+            task_id
+        )))
     }
 }

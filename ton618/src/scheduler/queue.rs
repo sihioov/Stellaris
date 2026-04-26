@@ -3,12 +3,12 @@
 //! In-memory scheduler queue using a min-heap (priority queue) for ScheduledJob,
 //! where jobs are ordered by next_run Instant (earliest first).
 
+use crate::scheduler::job::Job;
+use crate::scheduler::schedule::Schedule;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
 use std::time::Instant;
-use crate::scheduler::job::Job;
-use crate::scheduler::schedule::Schedule;
 
 /// A job scheduled with its next execution time.
 pub struct ScheduledJob<J: Job> {
@@ -21,7 +21,11 @@ impl<J: Job> ScheduledJob<J> {
     /// Create a new ScheduledJob with next_run = now + schedule.next_delay()
     pub fn new(job: J, schedule: Schedule) -> Self {
         let next_run = Instant::now() + schedule.next_delay();
-        ScheduledJob { next_run, job, schedule }
+        ScheduledJob {
+            next_run,
+            job,
+            schedule,
+        }
     }
 
     /// Update the next_run based on the schedule.
@@ -59,7 +63,7 @@ pub trait JobQueue<J: Job>: Send + Sync {
 
     /// Dequeue the scheduled job with the earliest next_run.
     fn dequeue(&self) -> Option<ScheduledJob<J>>;
-    
+
     /// Peek the next_run time of the highest priority job without removing it.
     fn peek_next_run(&self) -> Option<Instant>;
 }

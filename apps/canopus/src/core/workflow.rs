@@ -25,7 +25,9 @@ impl WorkflowState {
         if allowed {
             Ok(next)
         } else {
-            Err(CanopusError::InvalidTransition(format!("{self:?} -> {next:?}")))
+            Err(CanopusError::InvalidTransition(format!(
+                "{self:?} -> {next:?}"
+            )))
         }
     }
 }

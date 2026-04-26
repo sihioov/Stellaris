@@ -1,9 +1,9 @@
 // dysonsphere/db/task_table.rs
 
-use async_trait::async_trait;
-use crate::message::TaskMessage;
 use crate::error::Result;
+use crate::message::TaskMessage;
 use crate::status::TaskStatus;
+use async_trait::async_trait;
 
 /// TaskTable Trait
 #[async_trait]

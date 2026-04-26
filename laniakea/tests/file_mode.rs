@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use std::time::Duration;
 use dysonsphere::{
     db::{task_table_file::FileTaskTable, TaskTable},
     message::{TaskMessage, TaskMeta, TaskType},
     status::TaskStatus,
 };
 use laniakea::worker::run_file_loop;
+use std::sync::Arc;
+use std::time::Duration;
 
 fn make_dispatched_task(id: &str, task_type: TaskType) -> TaskMessage {
     TaskMessage {
@@ -42,11 +42,23 @@ async fn file_mode_processes_dispatched_tasks_to_pending_review() {
 
     let t1 = table.fetch("T1").await.unwrap().unwrap();
     let t2 = table.fetch("T2").await.unwrap().unwrap();
-    assert_eq!(t1.meta.status, TaskStatus::PendingReview, "T1 should be PendingReview");
-    assert_eq!(t2.meta.status, TaskStatus::PendingReview, "T2 should be PendingReview");
+    assert_eq!(
+        t1.meta.status,
+        TaskStatus::PendingReview,
+        "T1 should be PendingReview"
+    );
+    assert_eq!(
+        t2.meta.status,
+        TaskStatus::PendingReview,
+        "T2 should be PendingReview"
+    );
 
     // idempotency: PendingReview는 재처리되지 않음
     tokio::time::sleep(Duration::from_millis(200)).await;
     let t1_again = table.fetch("T1").await.unwrap().unwrap();
-    assert_eq!(t1_again.meta.status, TaskStatus::PendingReview, "T1 must not be re-dispatched");
+    assert_eq!(
+        t1_again.meta.status,
+        TaskStatus::PendingReview,
+        "T1 must not be re-dispatched"
+    );
 }

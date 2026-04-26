@@ -2,7 +2,9 @@ use crate::adapters::agent_runtime::MockAgentRuntime;
 use crate::adapters::artifact_store::LocalFileArtifactStore;
 use crate::adapters::task_backend::StellarisTaskBackend;
 use crate::adapters::tool_gateway::LocalToolGateway;
-use crate::core::{AgentRole, AgentTask, Agenda, Artifact, ArtifactKind, CanopusError, CanopusResult};
+use crate::core::{
+    Agenda, AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError, CanopusResult,
+};
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
 use std::path::PathBuf;
 
@@ -34,7 +36,12 @@ fn submit(args: &[String]) -> CanopusResult<()> {
 
     let plan_task = AgentTask::for_agenda("TASK-1-plan", &agenda, AgentRole::Planner);
     backend.submit(&plan_task)?;
-    let plan_result = runtime.run(&plan_task, &AgentContext { repo_path: parsed.repo.clone() })?;
+    let plan_result = runtime.run(
+        &plan_task,
+        &AgentContext {
+            repo_path: parsed.repo.clone(),
+        },
+    )?;
     for artifact in &plan_result.artifacts {
         artifact_store.save(artifact)?;
     }
@@ -42,7 +49,12 @@ fn submit(args: &[String]) -> CanopusResult<()> {
 
     let code_task = AgentTask::for_agenda("TASK-2-code", &agenda, AgentRole::Coder);
     backend.submit(&code_task)?;
-    let code_result = runtime.run(&code_task, &AgentContext { repo_path: parsed.repo.clone() })?;
+    let code_result = runtime.run(
+        &code_task,
+        &AgentContext {
+            repo_path: parsed.repo.clone(),
+        },
+    )?;
     for artifact in &code_result.artifacts {
         artifact_store.save(artifact)?;
     }
@@ -67,19 +79,29 @@ fn submit(args: &[String]) -> CanopusResult<()> {
 
     let review_task = AgentTask::for_agenda("TASK-3-review", &agenda, AgentRole::Reviewer);
     backend.submit(&review_task)?;
-    let review_result = runtime.run(&review_task, &AgentContext { repo_path: parsed.repo })?;
+    let review_result = runtime.run(
+        &review_task,
+        &AgentContext {
+            repo_path: parsed.repo,
+        },
+    )?;
     for artifact in &review_result.artifacts {
         artifact_store.save(artifact)?;
     }
     notify_discord("🔍 **Review 완료** — 리뷰어 검토가 완료됐습니다.");
 
-    println!("Canopus task {} completed local patch flow on branch {branch}", agenda.id);
+    println!(
+        "Canopus task {} completed local patch flow on branch {branch}",
+        agenda.id
+    );
     Ok(())
 }
 
 fn status(args: &[String]) -> CanopusResult<()> {
     if args.len() != 1 {
-        return Err(CanopusError::InvalidInput("usage: canopus status <task-id>".to_string()));
+        return Err(CanopusError::InvalidInput(
+            "usage: canopus status <task-id>".to_string(),
+        ));
     }
     println!("{}: local status is file-backed in MVP", args[0]);
     Ok(())
@@ -87,7 +109,9 @@ fn status(args: &[String]) -> CanopusResult<()> {
 
 fn artifacts(args: &[String]) -> CanopusResult<()> {
     if args.len() != 1 {
-        return Err(CanopusError::InvalidInput("usage: canopus artifacts <task-id>".to_string()));
+        return Err(CanopusError::InvalidInput(
+            "usage: canopus artifacts <task-id>".to_string(),
+        ));
     }
     println!("artifacts for {} are under .canopus/artifacts", args[0]);
     Ok(())
@@ -129,10 +153,16 @@ impl SubmitArgs {
 
         let request = request_parts.join(" ");
         if request.trim().is_empty() {
-            return Err(CanopusError::InvalidInput("submit requires a request".to_string()));
+            return Err(CanopusError::InvalidInput(
+                "submit requires a request".to_string(),
+            ));
         }
 
-        Ok(Self { repo, state, request })
+        Ok(Self {
+            repo,
+            state,
+            request,
+        })
     }
 }
 
