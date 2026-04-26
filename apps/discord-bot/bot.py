@@ -439,6 +439,33 @@ async def cmd_status(ctx):
     await ctx.send("\n".join(lines))
 
 
+@bot.command(name="help")
+async def cmd_help(ctx):
+    """Show all available commands."""
+    await ctx.send(
+        "**📖 Stellaris AI Pipeline — 명령어 목록**\n\n"
+
+        "**🗂️ 프로젝트 관리**\n"
+        "`!new-project <이름> <경로>` — 신규 프로젝트 생성\n"
+        "ㄴ 디렉토리 생성 + git init + Discord 카테고리/채널 4개 자동 생성\n"
+        "`!register <경로>` — 현재 카테고리에 기존 Git 레포 등록\n\n"
+
+        "**🤖 AI 작업 실행** *(#planning / #development / #review 채널에서 사용)*\n"
+        "`!run <요청>` — AI 작업 시작\n"
+        "ㄴ `#planning` → 플래너만 실행\n"
+        "ㄴ `#development` → 전체 파이프라인 (Plan+Code+Review)\n"
+        "ㄴ `#review` → 리뷰어만 실행\n\n"
+
+        "**✅ 작업 승인/거절**\n"
+        "`!approve [task_id]` — 작업 승인 → Processed\n"
+        "`!reject [task_id]` — 작업 거절 → Failed\n\n"
+
+        "**📋 상태 확인**\n"
+        "`!status` — 현재 프로젝트 태스크 목록\n"
+        "`!help` — 이 메시지"
+    )
+
+
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
         raise RuntimeError("DISCORD_BOT_TOKEN environment variable is not set.")
