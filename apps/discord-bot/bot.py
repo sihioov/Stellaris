@@ -187,6 +187,26 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
         await ctx.send("⚠️ 서버 채널에서만 사용할 수 있습니다.")
         return
 
+    # 중복 체크: 같은 경로가 이미 등록됐는지
+    data = read_projects()
+    for cat_id, proj in data["projects"].items():
+        if os.path.normpath(proj["repo_path"]) == os.path.normpath(repo_path):
+            await ctx.send(
+                f"⚠️ 해당 경로는 이미 **{proj['name']}** 프로젝트로 등록되어 있습니다.\n"
+                f"경로: `{proj['repo_path']}`\n"
+                f"기존 프로젝트를 사용하거나 `!register <경로>` 로 다른 카테고리에 연결하세요."
+            )
+            return
+
+    # 중복 체크: 같은 이름의 Discord 카테고리가 이미 있는지
+    existing_category = discord.utils.get(ctx.guild.categories, name=name)
+    if existing_category:
+        await ctx.send(
+            f"⚠️ **{name}** 카테고리가 이미 Discord 서버에 존재합니다.\n"
+            f"기존 카테고리를 사용하려면 해당 채널에서 `!register {repo_path}` 를 실행하세요."
+        )
+        return
+
     steps = []
     category = None
     try:
