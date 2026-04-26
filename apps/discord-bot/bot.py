@@ -125,6 +125,29 @@ def is_authorized(ctx) -> bool:
     return ctx.author.id in ALLOWED_USER_IDS
 
 
+async def _find_pending_review_target(ctx, tasks: list, task_id: str | None, command: str):
+    """Resolve which PendingReview task to act on. Returns task dict or None (already sent error)."""
+    pending = [t for t in tasks if t.get("meta", {}).get("status") == "PendingReview"]
+    if task_id:
+        target = next((t for t in tasks if t["task_id"] == task_id), None)
+        if not target:
+            await ctx.send(f"⚠️ Task `{task_id}` 를 찾을 수 없습니다.")
+            return None
+        if target.get("meta", {}).get("status") != "PendingReview":
+            current = target.get("meta", {}).get("status", "?")
+            await ctx.send(f"⚠️ Task `{task_id}` 는 PendingReview 상태가 아닙니다 (현재: {current}).")
+            return None
+        return target
+    if not pending:
+        await ctx.send("⚠️ 검토 대기 중인 태스크가 없습니다.")
+        return None
+    if len(pending) > 1:
+        ids = ", ".join(f"`{t['task_id']}`" for t in pending)
+        await ctx.send(f"⚠️ 여러 태스크가 검토 대기 중입니다: {ids}\n`!{command} <task_id>` 로 지정해주세요.")
+        return None
+    return pending[0]
+
+
 def get_category_context(ctx):
     """Returns (category_id, project, tasks_path) or (None, None, None) if not in a project channel."""
     if not ctx.guild or not hasattr(ctx.channel, "category") or not ctx.channel.category:
@@ -288,26 +311,9 @@ async def cmd_approve(ctx, task_id: str = None):
         return
 
     tasks = read_tasks(tasks_path)
-    pending_review = [t for t in tasks if t.get("meta", {}).get("status") == "PendingReview"]
-
-    if task_id:
-        target = next((t for t in tasks if t["task_id"] == task_id), None)
-        if not target:
-            await ctx.send(f"⚠️ Task `{task_id}` 를 찾을 수 없습니다.")
-            return
-        if target.get("meta", {}).get("status") != "PendingReview":
-            current = target.get("meta", {}).get("status", "?")
-            await ctx.send(f"⚠️ Task `{task_id}` 는 PendingReview 상태가 아닙니다 (현재: {current}).")
-            return
-    else:
-        if not pending_review:
-            await ctx.send("⚠️ 검토 대기 중인 태스크가 없습니다.")
-            return
-        if len(pending_review) > 1:
-            ids = ", ".join(f"`{t['task_id']}`" for t in pending_review)
-            await ctx.send(f"⚠️ 여러 태스크가 검토 대기 중입니다: {ids}\n`!approve <task_id>` 로 지정해주세요.")
-            return
-        target = pending_review[0]
+    target = await _find_pending_review_target(ctx, tasks, task_id, "approve")
+    if target is None:
+        return
 
     for t in tasks:
         if t["task_id"] == target["task_id"]:
@@ -331,26 +337,9 @@ async def cmd_reject(ctx, task_id: str = None):
         return
 
     tasks = read_tasks(tasks_path)
-    pending_review = [t for t in tasks if t.get("meta", {}).get("status") == "PendingReview"]
-
-    if task_id:
-        target = next((t for t in tasks if t["task_id"] == task_id), None)
-        if not target:
-            await ctx.send(f"⚠️ Task `{task_id}` 를 찾을 수 없습니다.")
-            return
-        if target.get("meta", {}).get("status") != "PendingReview":
-            current = target.get("meta", {}).get("status", "?")
-            await ctx.send(f"⚠️ Task `{task_id}` 는 PendingReview 상태가 아닙니다 (현재: {current}).")
-            return
-    else:
-        if not pending_review:
-            await ctx.send("⚠️ 검토 대기 중인 태스크가 없습니다.")
-            return
-        if len(pending_review) > 1:
-            ids = ", ".join(f"`{t['task_id']}`" for t in pending_review)
-            await ctx.send(f"⚠️ 여러 태스크가 검토 대기 중입니다: {ids}\n`!reject <task_id>` 로 지정해주세요.")
-            return
-        target = pending_review[0]
+    target = await _find_pending_review_target(ctx, tasks, task_id, "reject")
+    if target is None:
+        return
 
     for t in tasks:
         if t["task_id"] == target["task_id"]:
@@ -364,6 +353,9 @@ async def cmd_reject(ctx, task_id: str = None):
 @bot.command(name="status")
 async def cmd_status(ctx):
     """Show tasks for current project category."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
     category_id, project, tasks_path = get_category_context(ctx)
 
     if project is None:
