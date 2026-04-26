@@ -6,6 +6,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() -> dysonsphere::error::Result<()> {
+    dotenvy::dotenv().ok();
     env_logger::init();
 
     let source = std::env::var("LANIAKEA_SOURCE").unwrap_or_else(|_| "file".into());

@@ -4,5 +4,6 @@ members = [
     "ton618",
     "dysonsphere",
     "laniakea",
-    "apps/canopus"
+    "apps/canopus",
+    "hubble",
 ]
