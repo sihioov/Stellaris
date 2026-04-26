@@ -1,4 +1,8 @@
 .worktrees/
+.env
+**/.env
+tasks.json
+.canopus/
 .claude/
 .omc/
 .omx/
