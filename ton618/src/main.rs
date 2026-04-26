@@ -5,40 +5,41 @@ mod nosql;
 mod scheduler;
 mod task;
 
-use dysonsphere::message::TaskMessage;
+use dysonsphere::db::task_table_file::FileTaskTable;
+use dysonsphere::db::TaskTable;
+use dysonsphere::status::TaskStatus;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use anyhow::Result;
-use crate::file::FileDataSource;
-use crate::datasource::TaskDataSource;
 use crate::scheduler::Schedule;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
 
-    let datasource = FileDataSource::new("tasks.json");
+    let tasks_path = std::env::var("TASKS_JSON_PATH")
+        .unwrap_or_else(|_| "tasks.json".into());
+    let table = Arc::new(FileTaskTable::new(PathBuf::from(&tasks_path)));
 
     loop {
         log::info!("Checking for pending tasks...");
 
-        let tasks = datasource.fetch_pending().await?;
+        let tasks = table.fetch_pending().await
+            .unwrap_or_else(|e| { log::error!("fetch_pending failed: {e}"); vec![] });
 
         if tasks.is_empty() {
             log::info!("⏸ No pending tasks.");
         } else {
             for task in &tasks {
-                // Task processing example
-                // send_to_laniakea(task).await;
-                log::info!("Got task: {}", task.task_id);
-            }
-
-            for task in &tasks {
-                datasource.mark_processed(&task.task_id).await?;
+                log::info!("Dispatching task: {} (type: {:?})", task.task_id, task.task_type);
+                if let Err(e) = table.update_status(&task.task_id, TaskStatus::Dispatched).await {
+                    log::error!("Failed to dispatch task {}: {e}", task.task_id);
+                }
             }
         }
 
-        // 다음 실행 예약
         let schedule = Schedule::fixed(Duration::from_secs(10));
         let delay = schedule.next_delay();
         sleep(delay).await;
