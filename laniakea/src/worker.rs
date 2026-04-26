@@ -5,6 +5,10 @@ use dysonsphere::{
     message::TaskMessage,
     status::TaskStatus,
 };
+use lapin::{
+    message::Delivery,
+    options::{BasicAckOptions, BasicNackOptions},
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -51,12 +55,26 @@ pub async fn run_file_loop(table: Arc<FileTaskTable>, interval: Duration) -> Res
     }
 }
 
-pub async fn run_rabbit_loop(mut rx: Receiver<TaskMessage>) -> Result<()> {
-    while let Some(task) = rx.recv().await {
-        if let Err(e) = process_task(&task).await {
-            log::error!("[rabbit] handler error for {}: {e}", task.task_id);
+pub async fn run_rabbit_loop(mut rx: Receiver<(TaskMessage, Delivery)>) -> Result<()> {
+    while let Some((task, delivery)) = rx.recv().await {
+        match process_task(&task).await {
+            Ok(()) => {
+                // ack after successful processing (true at-least-once)
+                if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
+                    log::error!("[rabbit] ack failed for {}: {e}", task.task_id);
+                }
+            }
+            Err(e) => {
+                log::error!("[rabbit] handler error for {}: {e}", task.task_id);
+                // nack with requeue=false to avoid infinite retry loop
+                let _ = delivery
+                    .nack(BasicNackOptions {
+                        requeue: false,
+                        ..Default::default()
+                    })
+                    .await;
+            }
         }
-        // RabbitMQ mode: ack is handled by the subscriber after channel forward
     }
     Ok(())
 }

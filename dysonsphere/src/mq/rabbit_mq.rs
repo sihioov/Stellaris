@@ -4,7 +4,8 @@ use crate::message::TaskMessage;
 use crate::mq::message_queue::MessageQueue;
 use async_trait::async_trait;
 use lapin::{
-    options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions},
+    message::Delivery,
+    options::{BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions},
     types::FieldTable,
     BasicProperties, Channel, Connection, ConnectionProperties,
 };
@@ -45,7 +46,10 @@ impl MessageQueue for RabbitMQClient {
         Ok(())
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<Receiver<TaskMessage>, Self::Error> {
+    async fn subscribe(
+        &self,
+        topic: &str,
+    ) -> Result<Receiver<(TaskMessage, Delivery)>, Self::Error> {
         // Create MPSC channel
         let (tx, rx) = channel(100);
 
@@ -55,7 +59,7 @@ impl MessageQueue for RabbitMQClient {
             .queue_declare(topic, QueueDeclareOptions::default(), FieldTable::default())
             .await?;
 
-        // no_ack: false — explicit ack after forwarding to channel (at-least-once delivery)
+        // no_ack: false — caller must ack Delivery after successful processing (true at-least-once)
         let mut consumer = self
             .channel
             .basic_consume(
@@ -70,10 +74,7 @@ impl MessageQueue for RabbitMQClient {
         tokio::spawn(async move {
             while let Some(Ok(delivery)) = consumer.next().await {
                 if let Ok(task) = serde_json::from_slice::<TaskMessage>(&delivery.data) {
-                    let _ = tx.send(task).await;
-                    if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
-                        eprintln!("[rabbitmq] ack failed: {e}");
-                    }
+                    let _ = tx.send((task, delivery)).await;
                 }
             }
         });

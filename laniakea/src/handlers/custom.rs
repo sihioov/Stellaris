@@ -29,17 +29,8 @@ async fn run_canopus(task: &TaskMessage) -> Result<()> {
         task.payload
     );
 
-    // `--` prevents payload from being parsed as flags (argument injection guard)
     let cmd_future = Command::new("canopus")
-        .args([
-            "submit",
-            "--repo",
-            &repo,
-            "--state",
-            &state,
-            "--",
-            &task.payload,
-        ])
+        .args(["submit", "--repo", &repo, "--state", &state, &task.payload])
         .output();
 
     let output = match tokio::time::timeout(Duration::from_secs(timeout_secs), cmd_future).await {
