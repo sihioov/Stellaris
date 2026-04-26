@@ -15,10 +15,10 @@ async fn process_task(task: &TaskMessage) -> Result<()> {
 
 pub async fn run_file_loop(table: Arc<FileTaskTable>, interval: Duration) -> Result<()> {
     loop {
-        let pending = match table.fetch_pending().await {
+        let pending = match table.fetch_dispatched().await {
             Ok(tasks) => tasks,
             Err(e) => {
-                log::error!("[file] fetch_pending failed: {e}");
+                log::error!("[file] fetch_dispatched failed: {e}");
                 tokio::time::sleep(interval).await;
                 continue;
             }
