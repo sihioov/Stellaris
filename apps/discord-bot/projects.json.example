@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "1234567890123456789": {
+      "name": "Stellaris",
+      "repo_path": "D:/develop/repositories/Stellaris",
+      "registered_at": "2026-04-26T00:00:00Z"
+    },
+    "9876543210987654321": {
+      "name": "my-app",
+      "repo_path": "C:/projects/my-app",
+      "registered_at": "2026-04-26T00:00:00Z"
+    }
+  }
+}
