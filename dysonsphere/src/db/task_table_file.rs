@@ -25,8 +25,7 @@ impl FileTaskTable {
             return Ok(vec![]);
         }
 
-        let data = fs::read(&self.path)?;
-        let data = String::from_utf8_lossy(&data);
+        let data = fs::read_to_string(&self.path)?;
         if data.trim().is_empty() {
             return Ok(vec![]);
         }
@@ -38,8 +37,8 @@ impl FileTaskTable {
     fn write_tasks(&self, tasks: &[TaskMessage]) -> Result<()> {
         let json = serde_json::to_string_pretty(tasks)?;
         let tmp_path = self.path.with_extension("tmp");
-        fs::write(&tmp_path, json.as_bytes())?;
-        fs::rename(&tmp_path, &self.path).map_err(|e| StellarisError::IoError(e.to_string()))?;
+        fs::write(&tmp_path, &json)?;
+        fs::rename(&tmp_path, &self.path)?;
         Ok(())
     }
 }
