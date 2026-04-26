@@ -57,7 +57,7 @@ impl MessageQueue for RabbitMQClient {
         let mut consumer = self.channel.basic_consume(
             queue.name().as_str(),
             "",
-            BasicConsumeOptions::default(),
+            BasicConsumeOptions { no_ack: true, ..Default::default() },
             FieldTable::default(),
         ).await?;
 

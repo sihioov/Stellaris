@@ -3,4 +3,21 @@ name = "laniakea"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "laniakea"
+path = "src/main.rs"
+
+[lib]
+name = "laniakea"
+path = "src/lib.rs"
+
 [dependencies]
+dysonsphere = { path = "../dysonsphere" }
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "time"] }
+log = "0.4.27"
+env_logger = "0.11.8"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1.0.140"
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "time", "test-util"] }
