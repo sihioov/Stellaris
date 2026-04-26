@@ -11,20 +11,19 @@ fn test_file(name: &str) -> std::path::PathBuf {
     path
 }
 
-#[test]
-fn submits_agent_task_as_stellaris_task_message() {
+#[tokio::test]
+async fn submits_agent_task_as_stellaris_task_message() {
     let path = test_file("stellaris-backend");
     let backend = StellarisTaskBackend::new(path.clone()).unwrap();
     let agenda = Agenda::new_with_id("CANOPUS-1", "add tests").unwrap();
     let task = AgentTask::for_agenda("TASK-1", &agenda, AgentRole::Coder);
 
-    let submitted = backend.submit(&task).unwrap();
+    let submitted = backend.submit(&task).await.unwrap();
 
     assert_eq!(submitted.backend_id, "TASK-1");
 
     let table = FileTaskTable::new(path.clone());
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let stored = runtime.block_on(table.fetch("TASK-1")).unwrap().unwrap();
+    let stored = table.fetch("TASK-1").await.unwrap().unwrap();
 
     assert_eq!(stored.task_id, "TASK-1");
     assert_eq!(

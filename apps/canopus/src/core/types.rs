@@ -29,14 +29,16 @@ pub enum AgentRole {
     Planner,
     Coder,
     Reviewer,
+    Custom(String),
 }
 
 impl AgentRole {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             AgentRole::Planner => "planner",
             AgentRole::Coder => "coder",
             AgentRole::Reviewer => "reviewer",
+            AgentRole::Custom(s) => s.as_str(),
         }
     }
 }

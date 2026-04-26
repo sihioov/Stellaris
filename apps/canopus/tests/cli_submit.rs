@@ -37,8 +37,8 @@ fn git_repo(name: &str) -> std::path::PathBuf {
     root
 }
 
-#[test]
-fn submit_creates_branch_patch_backend_task_and_artifacts() {
+#[tokio::test]
+async fn submit_creates_branch_patch_backend_task_and_artifacts() {
     let repo = git_repo("cli-submit");
     let state = repo.join(".canopus");
 
@@ -51,6 +51,7 @@ fn submit_creates_branch_patch_backend_task_and_artifacts() {
         state.display().to_string(),
         "add test coverage".to_string(),
     ])
+    .await
     .unwrap();
 
     assert!(repo.join("canopus-mock-output.txt").exists());

@@ -10,8 +10,8 @@ fn test_repo(name: &str) -> std::path::PathBuf {
     root
 }
 
-#[test]
-fn planner_returns_plan_artifact() {
+#[tokio::test]
+async fn planner_returns_plan_artifact() {
     let repo = test_repo("mock-planner");
     let agenda = Agenda::new_with_id("CANOPUS-1", "add tests").unwrap();
     let task = AgentTask::for_agenda("TASK-PLAN", &agenda, AgentRole::Planner);
@@ -23,7 +23,9 @@ fn planner_returns_plan_artifact() {
             &AgentContext {
                 repo_path: repo.clone(),
             },
+            &[],
         )
+        .await
         .unwrap();
 
     assert_eq!(result.task_id, "TASK-PLAN");
@@ -32,8 +34,8 @@ fn planner_returns_plan_artifact() {
     let _ = fs::remove_dir_all(repo);
 }
 
-#[test]
-fn coder_runtime_creates_a_repo_file_for_diff_testing() {
+#[tokio::test]
+async fn coder_runtime_creates_a_repo_file_for_diff_testing() {
     let repo = test_repo("mock-coder");
     let agenda = Agenda::new_with_id("CANOPUS-1", "add tests").unwrap();
     let task = AgentTask::for_agenda("TASK-CODE", &agenda, AgentRole::Coder);
@@ -45,7 +47,9 @@ fn coder_runtime_creates_a_repo_file_for_diff_testing() {
             &AgentContext {
                 repo_path: repo.clone(),
             },
+            &[],
         )
+        .await
         .unwrap();
 
     assert!(repo.join("canopus-mock-output.txt").exists());

@@ -12,7 +12,7 @@ impl LocalToolGateway {
             return Err(CanopusError::Tool("command must not be empty".to_string()));
         }
 
-        if !matches!(command[0], "git" | "cargo") {
+        if !matches!(command[0], "git" | "cargo" | "gh") {
             return Err(CanopusError::Tool(format!(
                 "command is not allowlisted: {}",
                 command[0]
