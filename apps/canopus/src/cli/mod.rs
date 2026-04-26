@@ -38,6 +38,7 @@ fn submit(args: &[String]) -> CanopusResult<()> {
     for artifact in &plan_result.artifacts {
         artifact_store.save(artifact)?;
     }
+    notify_discord("📋 **Plan 완료** — 플래너가 작업 계획을 수립했습니다.");
 
     let code_task = AgentTask::for_agenda("TASK-2-code", &agenda, AgentRole::Coder);
     backend.submit(&code_task)?;
@@ -45,6 +46,7 @@ fn submit(args: &[String]) -> CanopusResult<()> {
     for artifact in &code_result.artifacts {
         artifact_store.save(artifact)?;
     }
+    notify_discord("💻 **Code 완료** — 코더가 변경사항을 적용했습니다.");
 
     let diff = tools.changed_files(&parsed.repo)?;
     artifact_store.save(&Artifact {
@@ -69,6 +71,7 @@ fn submit(args: &[String]) -> CanopusResult<()> {
     for artifact in &review_result.artifacts {
         artifact_store.save(artifact)?;
     }
+    notify_discord("🔍 **Review 완료** — 리뷰어 검토가 완료됐습니다.");
 
     println!("Canopus task {} completed local patch flow on branch {branch}", agenda.id);
     Ok(())
@@ -130,6 +133,13 @@ impl SubmitArgs {
         }
 
         Ok(Self { repo, state, request })
+    }
+}
+
+fn notify_discord(message: &str) {
+    if let Ok(url) = std::env::var("DISCORD_WEBHOOK_URL") {
+        let body = serde_json::json!({"content": message});
+        let _ = ureq::post(&url).send_json(body);
     }
 }
 
