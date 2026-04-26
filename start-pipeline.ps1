@@ -13,18 +13,22 @@ if (Test-Path $rootEnv) {
 }
 
 $TASKS_JSON  = Join-Path $REPO_ROOT "tasks.json"
-$WEBHOOK_URL = $env:DISCORD_WEBHOOK_URL
 $BOT_ENV     = Join-Path $REPO_ROOT "apps\discord-bot\.env"
 
 # 검증
-if (-not $WEBHOOK_URL) {
+if (-not $env:DISCORD_WEBHOOK_URL) {
     Write-Host "❌ .env에 DISCORD_WEBHOOK_URL이 없습니다." -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path $BOT_ENV) -or -not (Select-String -Path $BOT_ENV -Pattern "DISCORD_BOT_TOKEN=.+")) {
     Write-Host "❌ apps/discord-bot/.env에 DISCORD_BOT_TOKEN이 없습니다." -ForegroundColor Red; exit 1
 }
 
-# Canopus 바이너리 PATH 추가
+# Canopus release 바이너리 빌드 (Laniakea가 PATH에서 찾음)
+Write-Host "⚙️ Canopus 릴리즈 빌드 중..." -ForegroundColor Yellow
+cargo build -p canopus --release
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ Canopus 빌드 실패" -ForegroundColor Red; exit 1
+}
 $env:PATH = "$REPO_ROOT\target\release;$env:PATH"
 
 Write-Host "🚀 Stellaris 파이프라인 시작..." -ForegroundColor Green
@@ -38,9 +42,10 @@ Start-Process powershell -ArgumentList @(
 Start-Sleep -Seconds 2
 
 # Laniakea
+# DISCORD_WEBHOOK_URL은 부모 프로세스 환경에서 상속되므로 커맨드 문자열에 포함하지 않음
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
-    "cd '$REPO_ROOT'; `$env:TASKS_JSON_PATH='$TASKS_JSON'; `$env:LANIAKEA_SOURCE='file'; `$env:DISCORD_WEBHOOK_URL='$WEBHOOK_URL'; `$env:CANOPUS_REPO_PATH='$REPO_ROOT'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; `$env:RUST_LOG='info'; cargo run -p laniakea"
+    "cd '$REPO_ROOT'; `$env:LANIAKEA_FILE_PATH='$TASKS_JSON'; `$env:LANIAKEA_SOURCE='file'; `$env:CANOPUS_REPO_PATH='$REPO_ROOT'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; `$env:RUST_LOG='info'; cargo run -p laniakea"
 ) -WindowStyle Normal
 
 Start-Sleep -Seconds 2
@@ -55,6 +60,6 @@ Write-Host ""
 Write-Host "✅ 3개 프로세스 시작됨:" -ForegroundColor Green
 Write-Host "   🔵 TON618      — 태스크 스케줄러 (10초 폴링)"
 Write-Host "   🟠 Laniakea    — AI 워커 (Canopus 실행)"
-Write-Host "   🟡 Discord Bot — !run / !approve / !reject"
+Write-Host "   🟡 Discord Bot — !run / !approve [id] / !reject [id]"
 Write-Host ""
 Write-Host "Discord에서 !run <요청> 으로 파이프라인을 시작하세요." -ForegroundColor Cyan
