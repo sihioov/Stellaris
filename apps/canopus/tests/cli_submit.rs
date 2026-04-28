@@ -81,6 +81,14 @@ async fn submit_creates_branch_patch_backend_task_and_artifacts() {
         .join("review.md")
         .exists());
     assert!(state.join("tasks.json").exists());
+    let run_record_path = state.join("runs").join("CANOPUS-1.json");
+    assert!(run_record_path.exists());
+    let run_records: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
+    let records = run_records.as_array().unwrap();
+    assert!(records.iter().any(|record| record["name"] == "plan"));
+    assert!(records.iter().any(|record| record["name"] == "check"));
+    assert!(records.iter().any(|record| record["name"] == "complete"));
 
     let branch = Command::new("git")
         .args(["branch", "--show-current"])
@@ -91,6 +99,36 @@ async fn submit_creates_branch_patch_backend_task_and_artifacts() {
         String::from_utf8_lossy(&branch.stdout).trim(),
         "canopus/CANOPUS-1"
     );
+
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
+async fn submit_records_failed_prepare_stage() {
+    let repo = git_repo("cli-submit-failed-prepare");
+    let state = repo.join(".canopus");
+    fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
+
+    let err = cli::run(vec![
+        "canopus".to_string(),
+        "submit".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+        "--state".to_string(),
+        state.display().to_string(),
+        "add test coverage".to_string(),
+    ])
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("worktree is not clean"));
+    let run_record_path = state.join("runs").join("CANOPUS-1.json");
+    let run_records: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
+    let records = run_records.as_array().unwrap();
+    assert!(records
+        .iter()
+        .any(|record| record["name"] == "prepare" && record["status"] == "failed"));
 
     let _ = fs::remove_dir_all(repo);
 }

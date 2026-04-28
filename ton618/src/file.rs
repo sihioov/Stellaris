@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use dysonsphere::error::{Result, StellarisError};
 use dysonsphere::message::TaskMessage;
 use dysonsphere::status::TaskStatus;
-use serde_json::Value;
 use std::fs::{self};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -54,7 +53,7 @@ impl TaskDataSource for FileDataSource {
 
         let pending_tasks: Vec<_> = all_tasks
             .into_iter()
-            .filter(|task| !matches!(task.meta.status, TaskStatus::Processed))
+            .filter(|task| matches!(task.meta.status, TaskStatus::Pending))
             .collect();
 
         Ok(pending_tasks)

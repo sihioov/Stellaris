@@ -19,6 +19,18 @@ fn make_dispatched_task(id: &str, task_type: TaskType) -> TaskMessage {
     }
 }
 
+fn make_pending_proposal_task(id: &str) -> TaskMessage {
+    TaskMessage {
+        task_id: id.to_string(),
+        task_type: TaskType::Bug,
+        payload: format!("payload-{id}"),
+        meta: TaskMeta {
+            status: TaskStatus::PendingProposal,
+            ..TaskMeta::default()
+        },
+    }
+}
+
 #[tokio::test]
 async fn file_mode_processes_dispatched_tasks_to_pending_review() {
     let file = tempfile::NamedTempFile::new().unwrap();
@@ -61,4 +73,24 @@ async fn file_mode_processes_dispatched_tasks_to_pending_review() {
         TaskStatus::PendingReview,
         "T1 must not be re-dispatched"
     );
+}
+
+#[tokio::test]
+async fn file_mode_does_not_process_pending_proposals() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let tasks = vec![make_pending_proposal_task("P1")];
+    let json = serde_json::to_string(&tasks).unwrap();
+    std::fs::write(file.path(), &json).unwrap();
+
+    let table = Arc::new(FileTaskTable::new(file.path().to_path_buf()));
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(250),
+        run_file_loop(Arc::clone(&table), Duration::from_millis(50)),
+    )
+    .await;
+
+    assert!(result.is_err(), "expected timeout, worker exited early");
+    let task = table.fetch("P1").await.unwrap().unwrap();
+    assert_eq!(task.meta.status, TaskStatus::PendingProposal);
 }

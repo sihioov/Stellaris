@@ -3,11 +3,11 @@ use dysonsphere::message::TaskType;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pipeline {
-    DevMode,        // Analyst → Planner → Coder → Reviewer
-    BugFix,         // Analyzer → Coder → Tester
-    SecurityAudit,  // SecurityAuditor → Coder → Reviewer
-    TestWriter,     // Analyzer → TestWriter
-    UXImprovement,  // Researcher → Planner → Reviewer
+    DevMode,       // Analyst → Planner → Coder → Reviewer
+    BugFix,        // Analyzer → Coder → Tester
+    SecurityAudit, // SecurityAuditor → Coder → Reviewer
+    TestWriter,    // Analyzer → TestWriter
+    UXImprovement, // Researcher → Planner → Reviewer
 }
 
 impl Pipeline {

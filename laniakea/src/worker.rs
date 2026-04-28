@@ -30,21 +30,37 @@ pub async fn run_file_loop(table: Arc<FileTaskTable>, interval: Duration) -> Res
         for task in pending {
             match process_task(&task).await {
                 Ok(()) => {
-                    if let Err(e) = table
-                        .update_status(&task.task_id, TaskStatus::PendingReview)
+                    match table
+                        .update_status_if_current(
+                            &task.task_id,
+                            TaskStatus::Dispatched,
+                            TaskStatus::PendingReview,
+                        )
                         .await
                     {
-                        log::error!(
-                            "[file] update_status(PendingReview) failed for {}: {e}",
+                        Ok(true) => {}
+                        Ok(false) => log::warn!(
+                            "[file] skip PendingReview update for {} because status changed",
                             task.task_id
-                        );
+                        ),
+                        Err(e) => log::error!(
+                            "[file] update_status_if_current(PendingReview) failed for {}: {e}",
+                            task.task_id
+                        ),
                     }
                 }
                 Err(e) => {
                     log::error!("[file] handler error for {}: {e}", task.task_id);
-                    if let Err(ue) = table.update_status(&task.task_id, TaskStatus::Failed).await {
+                    if let Err(ue) = table
+                        .update_status_if_current(
+                            &task.task_id,
+                            TaskStatus::Dispatched,
+                            TaskStatus::Failed,
+                        )
+                        .await
+                    {
                         log::error!(
-                            "[file] update_status(Failed) failed for {}: {ue}",
+                            "[file] update_status_if_current(Failed) failed for {}: {ue}",
                             task.task_id
                         );
                     }

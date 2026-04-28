@@ -21,6 +21,27 @@ impl FileTaskTable {
         }
     }
 
+    pub async fn update_status_if_current(
+        &self,
+        task_id: &str,
+        current: TaskStatus,
+        next: TaskStatus,
+    ) -> Result<bool> {
+        let mut updated = false;
+        self.modify(
+            |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
+                Some(t) if t.meta.status == current => {
+                    t.meta.status = next;
+                    updated = true;
+                    Ok(())
+                }
+                Some(_) => Ok(()),
+                None => Err(StellarisError::DefaultError),
+            },
+        )?;
+        Ok(updated)
+    }
+
     /// Read-modify-write under both the intra-process mutex and a cross-process
     /// exclusive file lock on `<path>.lock`, then atomically rename the result.
     fn modify<F>(&self, f: F) -> Result<()>
@@ -33,6 +54,7 @@ impl FileTaskTable {
         let lock_file = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)?;
         fs2::FileExt::lock_exclusive(&lock_file)?;
 
@@ -98,15 +120,15 @@ impl TaskTable for FileTaskTable {
     }
 
     async fn update_status(&self, task_id: &str, status: TaskStatus) -> Result<()> {
-        self.modify(|tasks| {
-            match tasks.iter_mut().find(|t| t.task_id == task_id) {
+        self.modify(
+            |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
                 Some(t) => {
                     t.meta.status = status;
                     Ok(())
                 }
                 None => Err(StellarisError::DefaultError),
-            }
-        })
+            },
+        )
     }
 
     async fn delete(&self, task_id: &str) -> Result<()> {

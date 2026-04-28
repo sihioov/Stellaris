@@ -42,16 +42,15 @@ impl GitHubClient {
     }
 
     fn agent(&self) -> ureq::Agent {
-        ureq::AgentBuilder::new()
-            .user_agent("canopus/0.1")
-            .build()
+        ureq::AgentBuilder::new().user_agent("canopus/0.1").build()
     }
 
     /// GitHub Issue 생성. 성공 시 issue_number 반환.
     pub fn create_issue(&self, title: &str, body: &str) -> CanopusResult<u64> {
         let url = format!("{}/issues", self.base_url());
         let payload = serde_json::json!({ "title": title, "body": body });
-        let resp: serde_json::Value = self.agent()
+        let resp: serde_json::Value = self
+            .agent()
             .post(&url)
             .set("Authorization", &format!("Bearer {}", self.token))
             .set("Accept", "application/vnd.github+json")
@@ -68,7 +67,8 @@ impl GitHubClient {
     /// Issue의 모든 comment 조회.
     pub fn get_issue_comments(&self, issue_number: u64) -> CanopusResult<Vec<IssueComment>> {
         let url = format!("{}/issues/{}/comments", self.base_url(), issue_number);
-        let resp: Vec<IssueComment> = self.agent()
+        let resp: Vec<IssueComment> = self
+            .agent()
             .get(&url)
             .set("Authorization", &format!("Bearer {}", self.token))
             .set("Accept", "application/vnd.github+json")

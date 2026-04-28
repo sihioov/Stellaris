@@ -40,11 +40,20 @@ async fn main() -> Result<()> {
                     task.task_id,
                     task.task_type
                 );
-                if let Err(e) = table
-                    .update_status(&task.task_id, TaskStatus::Dispatched)
+                match table
+                    .update_status_if_current(
+                        &task.task_id,
+                        TaskStatus::Pending,
+                        TaskStatus::Dispatched,
+                    )
                     .await
                 {
-                    log::error!("Failed to dispatch task {}: {e}", task.task_id);
+                    Ok(true) => {}
+                    Ok(false) => log::warn!(
+                        "Skip dispatch for {} because status changed before update",
+                        task.task_id
+                    ),
+                    Err(e) => log::error!("Failed to dispatch task {}: {e}", task.task_id),
                 }
             }
         }

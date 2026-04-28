@@ -15,6 +15,10 @@ Commands:
   !run <request>              - Add task (agent type from channel name)
   !approve [task_id]          - Approve PendingReview task
   !reject  [task_id]          - Reject  PendingReview task
+  !propose-approve [task_id]  - Promote PendingProposal task to Pending
+  !propose-reject  [task_id]  - Reject PendingProposal task as Failed
+  !cancel [task_id]           - Cancel a non-terminal task as Failed
+  !show [task_id]             - Show task details and artifact paths
   !status                     - Show tasks for current project
 
 Authorization: set ALLOWED_USER_IDS=123456789,987654321 in env to restrict access.
@@ -23,6 +27,13 @@ import json
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows/dev fallback
+    fcntl = None
+
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -36,6 +47,7 @@ PROJECTS_JSON_PATH = os.environ.get(
     os.path.join(os.path.dirname(__file__), "projects.json"),
 )
 TASKS_DIR = os.environ.get("TASKS_DIR", os.path.dirname(__file__))
+CANOPUS_STATE_PATH = os.environ.get("CANOPUS_STATE_PATH")
 
 _raw_ids = os.environ.get("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS: set = {
@@ -54,6 +66,15 @@ intents.message_content = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+ICON_MAP = {
+    "Pending": "⏳",
+    "Dispatched": "🚀",
+    "PendingReview": "🔍",
+    "Processed": "✅",
+    "Failed": "❌",
+    "PendingProposal": "📝",
+}
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -97,7 +118,27 @@ def get_channel_type(channel_name: str) -> str | None:
     return CHANNEL_TYPE_MAP.get(name)
 
 
-def read_tasks(path: str) -> list:
+
+def lock_path_for(path: str) -> str:
+    root, ext = os.path.splitext(path)
+    return f"{root}.lock" if ext else f"{path}.lock"
+
+
+@contextmanager
+def task_file_lock(path: str, exclusive: bool):
+    lock_path = lock_path_for(path)
+    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        if fcntl is not None:
+            lock_mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(lock_file.fileno(), lock_mode)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+def _read_tasks_unlocked(path: str) -> list:
     if not os.path.exists(path):
         return []
     try:
@@ -108,7 +149,7 @@ def read_tasks(path: str) -> list:
         return []
 
 
-def write_tasks(tasks: list, path: str) -> None:
+def _write_tasks_unlocked(tasks: list, path: str) -> None:
     dir_path = os.path.dirname(os.path.abspath(path))
     os.makedirs(dir_path, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -119,34 +160,96 @@ def write_tasks(tasks: list, path: str) -> None:
     os.replace(tmp_path, path)
 
 
+def read_tasks(path: str) -> list:
+    with task_file_lock(path, exclusive=False):
+        return _read_tasks_unlocked(path)
+
+
+def write_tasks(tasks: list, path: str) -> None:
+    with task_file_lock(path, exclusive=True):
+        _write_tasks_unlocked(tasks, path)
+
+
+
+def append_task_locked(path: str, task: dict) -> None:
+    with task_file_lock(path, exclusive=True):
+        tasks = _read_tasks_unlocked(path)
+        tasks.append(task)
+        _write_tasks_unlocked(tasks, path)
+
+
+def update_task_status_locked(
+    path: str,
+    task_id: str | None,
+    command: str,
+    statuses: set[str],
+    label: str,
+    next_status: str,
+) -> tuple[dict | None, str | None]:
+    with task_file_lock(path, exclusive=True):
+        tasks = _read_tasks_unlocked(path)
+        candidates = [t for t in tasks if t.get("meta", {}).get("status") in statuses]
+        if task_id:
+            target = next((t for t in tasks if t.get("task_id") == task_id), None)
+            if not target:
+                return None, f"⚠️ Task `{task_id}` 를 찾을 수 없습니다."
+            current = target.get("meta", {}).get("status", "?")
+            if current not in statuses:
+                return None, f"⚠️ Task `{task_id}` 는 {label} 상태가 아닙니다 (현재: {current})."
+        else:
+            if not candidates:
+                return None, f"⚠️ {label} 상태의 태스크가 없습니다."
+            if len(candidates) > 1:
+                ids = ", ".join(f"`{t['task_id']}`" for t in candidates)
+                return None, f"⚠️ 여러 태스크가 대상입니다: {ids}\n`!{command} <task_id>` 로 지정해주세요."
+            target = candidates[0]
+
+        target.setdefault("meta", {})["status"] = next_status
+        target["meta"]["updated_at"] = now_iso()
+        snapshot = json.loads(json.dumps(target))
+        _write_tasks_unlocked(tasks, path)
+        return snapshot, None
+
+
 def is_authorized(ctx) -> bool:
     if not ALLOWED_USER_IDS:
         return True
     return ctx.author.id in ALLOWED_USER_IDS
 
 
-async def _find_pending_review_target(ctx, tasks: list, task_id: str | None, command: str):
-    """Resolve which PendingReview task to act on. Returns task dict or None (already sent error)."""
-    pending = [t for t in tasks if t.get("meta", {}).get("status") == "PendingReview"]
-    if task_id:
-        target = next((t for t in tasks if t["task_id"] == task_id), None)
-        if not target:
-            await ctx.send(f"⚠️ Task `{task_id}` 를 찾을 수 없습니다.")
-            return None
-        if target.get("meta", {}).get("status") != "PendingReview":
-            current = target.get("meta", {}).get("status", "?")
-            await ctx.send(f"⚠️ Task `{task_id}` 는 PendingReview 상태가 아닙니다 (현재: {current}).")
-            return None
-        return target
-    if not pending:
-        await ctx.send("⚠️ 검토 대기 중인 태스크가 없습니다.")
-        return None
-    if len(pending) > 1:
-        ids = ", ".join(f"`{t['task_id']}`" for t in pending)
-        await ctx.send(f"⚠️ 여러 태스크가 검토 대기 중입니다: {ids}\n`!{command} <task_id>` 로 지정해주세요.")
-        return None
-    return pending[0]
 
+def _payload_data(task: dict) -> dict:
+    payload = task.get("payload", "")
+    if isinstance(payload, dict):
+        return payload
+    try:
+        parsed = json.loads(payload)
+        return parsed if isinstance(parsed, dict) else {"raw": payload}
+    except (json.JSONDecodeError, TypeError):
+        return {"raw": payload}
+
+
+def _artifact_paths(project: dict | None, task: dict) -> list[str]:
+    state_root = CANOPUS_STATE_PATH
+    if not state_root and project:
+        state_root = os.path.join(project.get("repo_path", ""), ".canopus")
+    if not state_root:
+        return []
+
+    task_id = task.get("task_id", "")
+    candidates = [
+        os.path.join(state_root, "artifacts", task_id),
+        os.path.join(state_root, "runs", f"{task_id}.json"),
+    ]
+    found = []
+    for path in candidates:
+        if os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for name in files:
+                    found.append(os.path.join(root, name))
+        elif os.path.exists(path):
+            found.append(path)
+    return found[:10]
 
 def get_category_context(ctx):
     """Returns (category_id, project, tasks_path) or (None, None, None) if not in a project channel."""
@@ -324,7 +427,6 @@ async def cmd_run(ctx, *, request: str = None):
         await ctx.send("⚠️ `#planning`, `#development`, `#review` 채널에서만 작업을 실행할 수 있습니다.")
         return
 
-    tasks = read_tasks(tasks_path)
     task_id = f"discord-{uuid.uuid4().hex[:12]}"
     ts = now_iso()
     task = {
@@ -337,8 +439,7 @@ async def cmd_run(ctx, *, request: str = None):
             "updated_at": ts,
         },
     }
-    tasks.append(task)
-    write_tasks(tasks, tasks_path)
+    append_task_locked(tasks_path, task)
 
     type_label = {"canopus.planner": "📋 Planning", "canopus.agent": "🔄 Full Pipeline", "canopus.reviewer": "🔍 Review"}.get(channel_type, channel_type)
     await ctx.send(
@@ -363,17 +464,13 @@ async def cmd_approve(ctx, task_id: str = None):
         await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
         return
 
-    tasks = read_tasks(tasks_path)
-    target = await _find_pending_review_target(ctx, tasks, task_id, "approve")
-    if target is None:
+    target, error = update_task_status_locked(
+        tasks_path, task_id, "approve", {"PendingReview"}, "PendingReview", "Processed"
+    )
+    if error:
+        await ctx.send(error)
         return
 
-    for t in tasks:
-        if t["task_id"] == target["task_id"]:
-            t["meta"]["status"] = "Processed"
-            t["meta"]["updated_at"] = now_iso()
-            break
-    write_tasks(tasks, tasks_path)
     await ctx.send(f"✅ 태스크 승인됨\n**ID**: `{target['task_id']}`\n**Status**: Processed")
 
 
@@ -389,18 +486,153 @@ async def cmd_reject(ctx, task_id: str = None):
         await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
         return
 
-    tasks = read_tasks(tasks_path)
-    target = await _find_pending_review_target(ctx, tasks, task_id, "reject")
-    if target is None:
+    target, error = update_task_status_locked(
+        tasks_path, task_id, "reject", {"PendingReview"}, "PendingReview", "Failed"
+    )
+    if error:
+        await ctx.send(error)
         return
 
-    for t in tasks:
-        if t["task_id"] == target["task_id"]:
-            t["meta"]["status"] = "Failed"
-            t["meta"]["updated_at"] = now_iso()
-            break
-    write_tasks(tasks, tasks_path)
     await ctx.send(f"❌ 태스크 거부됨\n**ID**: `{target['task_id']}`\n**Status**: Failed")
+
+
+@bot.command(name="propose-approve")
+async def cmd_propose_approve(ctx, task_id: str = None):
+    """Approve a PendingProposal task → Pending."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+
+    category_id, project, tasks_path = get_category_context(ctx)
+    if project is None:
+        await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
+        return
+
+    target, error = update_task_status_locked(
+        tasks_path,
+        task_id,
+        "propose-approve",
+        {"PendingProposal"},
+        "PendingProposal",
+        "Pending",
+    )
+    if error:
+        await ctx.send(error)
+        return
+
+    await ctx.send(f"✅ 후보 승인됨\n**ID**: `{target['task_id']}`\n**Status**: Pending")
+
+
+@bot.command(name="propose-reject")
+async def cmd_propose_reject(ctx, task_id: str = None):
+    """Reject a PendingProposal task → Failed."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+
+    category_id, project, tasks_path = get_category_context(ctx)
+    if project is None:
+        await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
+        return
+
+    target, error = update_task_status_locked(
+        tasks_path,
+        task_id,
+        "propose-reject",
+        {"PendingProposal"},
+        "PendingProposal",
+        "Failed",
+    )
+    if error:
+        await ctx.send(error)
+        return
+
+    await ctx.send(f"❌ 후보 거부됨\n**ID**: `{target['task_id']}`\n**Status**: Failed")
+
+
+@bot.command(name="cancel")
+async def cmd_cancel(ctx, task_id: str = None):
+    """Cancel any non-terminal task → Failed. Processed tasks cannot be cancelled."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+
+    category_id, project, tasks_path = get_category_context(ctx)
+    if project is None:
+        await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
+        return
+
+    cancelable = {"Pending", "Dispatched", "PendingReview", "PendingProposal"}
+    target, error = update_task_status_locked(
+        tasks_path, task_id, "cancel", cancelable, "취소 가능", "Failed"
+    )
+    if error:
+        await ctx.send(error)
+        return
+
+    await ctx.send(f"🛑 태스크 취소됨\n**ID**: `{target['task_id']}`\n**Status**: Failed")
+
+
+@bot.command(name="show")
+async def cmd_show(ctx, task_id: str = None):
+    """Show one task with parsed payload and artifact paths."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+
+    category_id, project, tasks_path = get_category_context(ctx)
+    if project is None:
+        await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
+        return
+
+    tasks = read_tasks(tasks_path)
+    if task_id:
+        target = next((t for t in tasks if t.get("task_id") == task_id), None)
+        if not target:
+            await ctx.send(f"⚠️ Task `{task_id}` 를 찾을 수 없습니다.")
+            return
+    elif len(tasks) == 1:
+        target = tasks[0]
+    else:
+        await ctx.send("사용법: `!show <task_id>`")
+        return
+
+    meta = target.get("meta", {})
+    payload = _payload_data(target)
+    artifacts = _artifact_paths(project, target)
+    artifact_text = (
+        "\n".join(f"- `{path}`" for path in artifacts)
+        if artifacts
+        else "- (없음 또는 아직 생성 전)"
+    )
+    request = payload.get("request") or payload.get("raw") or target.get("payload", "")
+    repo_path = payload.get("repo_path") or (project or {}).get("repo_path", "?")
+    task_type = target.get("task_type", "?")
+    links = []
+    for key in (
+        "github_issue",
+        "github_issue_url",
+        "issue_url",
+        "github_pr",
+        "github_pr_url",
+        "pr_url",
+    ):
+        if payload.get(key):
+            links.append(f"- {key}: {payload[key]}")
+    link_text = "\n".join(links) if links else "- (없음)"
+
+    await ctx.send(
+        f"📄 **Task 상세**\n"
+        f"**ID**: `{target.get('task_id', '?')}`\n"
+        f"**Status**: {ICON_MAP.get(meta.get('status'), '❓')} {meta.get('status', '?')}\n"
+        f"**Type**: `{task_type}`\n"
+        f"**Created**: {meta.get('created_at', '?')}\n"
+        f"**Updated**: {meta.get('updated_at', '?')}\n"
+        f"**Repo**: `{repo_path}`\n"
+        f"**Request**: {request}\n"
+        f"**GitHub**:\n{link_text}\n"
+        f"**Artifacts**:\n{artifact_text}"
+    )
 
 
 @bot.command(name="status")
@@ -420,10 +652,6 @@ async def cmd_status(ctx):
         await ctx.send(f"📋 **{project['name']}** — 태스크 없음")
         return
 
-    icon_map = {
-        "Pending": "⏳", "Dispatched": "🚀", "PendingReview": "🔍",
-        "Processed": "✅", "Failed": "❌",
-    }
     lines = [f"📋 **{project['name']} Task Queue**"]
     for t in tasks:
         status = t.get("meta", {}).get("status", "Unknown")
@@ -434,7 +662,7 @@ async def cmd_status(ctx):
         except (json.JSONDecodeError, TypeError):
             preview = t.get("payload", "")
         preview = preview[:60] + "…" if len(preview) > 60 else preview
-        icon = icon_map.get(status, "❓")
+        icon = ICON_MAP.get(status, "❓")
         lines.append(f"{icon} `{task_id}` [{status}] — {preview}")
     await ctx.send("\n".join(lines))
 
@@ -458,10 +686,14 @@ async def cmd_help(ctx):
 
         "**✅ 작업 승인/거절**\n"
         "`!approve [task_id]` — 작업 승인 → Processed\n"
-        "`!reject [task_id]` — 작업 거절 → Failed\n\n"
+        "`!reject [task_id]` — 작업 거절 → Failed\n"
+        "`!propose-approve [task_id]` — 후보 승인 → Pending\n"
+        "`!propose-reject [task_id]` — 후보 거절 → Failed\n"
+        "`!cancel [task_id]` — 완료 전 태스크 취소 → Failed\n\n"
 
         "**📋 상태 확인**\n"
         "`!status` — 현재 프로젝트 태스크 목록\n"
+        "`!show <task_id>` — 태스크 상세 + artifact 경로\n"
         "`!help` — 이 메시지"
     )
 

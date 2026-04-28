@@ -7,4 +7,5 @@ pub enum TaskStatus {
     PendingReview,
     Processed,
     Failed,
+    PendingProposal,
 }

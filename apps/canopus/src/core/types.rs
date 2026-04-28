@@ -105,3 +105,13 @@ pub struct AgentRunResult {
     pub summary: String,
     pub artifacts: Vec<Artifact>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StageRecord {
+    pub name: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub duration_secs: u64,
+    pub status: String,
+    pub artifacts: Vec<String>,
+}

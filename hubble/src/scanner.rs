@@ -1,4 +1,5 @@
 use dysonsphere::message::{TaskMessage, TaskMeta, TaskType};
+use dysonsphere::status::TaskStatus;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Hash)]
@@ -28,7 +29,10 @@ impl Discovery {
             task_id: id.to_string(),
             task_type,
             payload: format!("{}: {}", self.title, self.description),
-            meta: TaskMeta::default(),
+            meta: TaskMeta {
+                status: TaskStatus::PendingProposal,
+                ..TaskMeta::default()
+            },
         }
     }
 }
@@ -39,7 +43,13 @@ pub async fn scan(repo_path: &std::path::Path) -> Vec<Discovery> {
     let mut findings = Vec::new();
 
     let output = Command::new("cargo")
-        .args(["clippy", "--message-format=short", "--", "-W", "clippy::all"])
+        .args([
+            "clippy",
+            "--message-format=short",
+            "--",
+            "-W",
+            "clippy::all",
+        ])
         .current_dir(repo_path)
         .output()
         .await;

@@ -4,11 +4,13 @@ use crate::adapters::github::GitHubClient;
 use crate::adapters::task_backend::StellarisTaskBackend;
 use crate::adapters::tool_gateway::LocalToolGateway;
 use crate::core::{
-    Agenda, AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError, CanopusResult,
-    Pipeline, WorkflowState,
+    Agenda, AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError, CanopusResult, Pipeline,
+    StageRecord, WorkflowState,
 };
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub async fn run(args: Vec<String>) -> CanopusResult<()> {
     if args.len() < 2 {
@@ -24,6 +26,19 @@ pub async fn run(args: Vec<String>) -> CanopusResult<()> {
     }
 }
 
+macro_rules! try_stage {
+    ($expr:expr, $stage:expr, $state_path:expr, $agenda_id:expr, $records:expr) => {
+        match $expr {
+            Ok(value) => value,
+            Err(err) => {
+                $records.push($stage.record("failed", Vec::new()));
+                let _ = persist_run_records($state_path, $agenda_id, $records);
+                return Err(err);
+            }
+        }
+    };
+}
+
 async fn submit(args: &[String]) -> CanopusResult<()> {
     let parsed = SubmitArgs::parse(args)?;
     // Note: changed_files excludes .canopus/ paths; --state must resolve under .canopus/ for MVP.
@@ -33,26 +48,61 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
     let backend = StellarisTaskBackend::new(parsed.state.join("tasks.json"))?;
     let runtime = MockAgentRuntime;
     let tools = LocalToolGateway;
+    let mut stage_records: Vec<StageRecord> = Vec::new();
 
-    tools.ensure_clean_worktree(&parsed.repo)?;
-    tools.create_branch(&parsed.repo, &branch)?;
+    let stage = StageTimer::start("prepare");
+    try_stage!(
+        tools.ensure_clean_worktree(&parsed.repo),
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    try_stage!(
+        tools.create_branch(&parsed.repo, &branch),
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    stage_records.push(stage.finish("ok", vec![]));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
 
     let mut state = WorkflowState::Created;
 
     let pipeline = Pipeline::DevMode; // CLI에서는 항상 DevMode; 유지보수는 hubble이 task_type으로 결정
     log::info!("[pipeline] 선택된 파이프라인: {:?}", pipeline);
 
-    let analyst_task = AgentTask::for_agenda("TASK-0-analyst", &agenda, AgentRole::Custom("analyst".to_string()));
-    backend.submit(&analyst_task).await?;
-    let analyst_result = runtime
-        .run(
-            &analyst_task,
-            &AgentContext {
-                repo_path: parsed.repo.clone(),
-            },
-            &[],
-        )
-        .await?;
+    let stage = StageTimer::start("analyst");
+    let analyst_task = AgentTask::for_agenda(
+        "TASK-0-analyst",
+        &agenda,
+        AgentRole::Custom("analyst".to_string()),
+    );
+    try_stage!(
+        backend.submit(&analyst_task).await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let analyst_result = try_stage!(
+        runtime
+            .run(
+                &analyst_task,
+                &AgentContext {
+                    repo_path: parsed.repo.clone(),
+                },
+                &[],
+            )
+            .await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    stage_records.push(stage.finish("ok", vec![]));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
 
     // GitHub Q&A Issue 생성 (GITHUB_TOKEN 있을 때만)
     let qa_issue_number: Option<u64> = if let Some(gh) = GitHubClient::from_env() {
@@ -99,20 +149,47 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
         .map_err(|e| CanopusError::InvalidInput(e.to_string()))?;
     log::info!("[workflow] state: {:?}", state);
 
+    let stage = StageTimer::start("plan");
     let plan_task = AgentTask::for_agenda("TASK-1-plan", &agenda, AgentRole::Planner);
-    backend.submit(&plan_task).await?;
-    let plan_result = runtime
-        .run(
-            &plan_task,
-            &AgentContext {
-                repo_path: parsed.repo.clone(),
-            },
-            &[],
-        )
-        .await?;
+    try_stage!(
+        backend.submit(&plan_task).await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let plan_result = try_stage!(
+        runtime
+            .run(
+                &plan_task,
+                &AgentContext {
+                    repo_path: parsed.repo.clone(),
+                },
+                &[],
+            )
+            .await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let mut plan_artifacts = Vec::new();
     for artifact in &plan_result.artifacts {
-        artifact_store.save(artifact)?;
+        plan_artifacts.push(
+            try_stage!(
+                artifact_store.save(artifact),
+                &stage,
+                &parsed.state,
+                &agenda.id,
+                &mut stage_records
+            )
+            .path
+            .display()
+            .to_string(),
+        );
     }
+    stage_records.push(stage.finish("ok", plan_artifacts));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
     notify_discord("📋 **Plan 완료** — 플래너가 작업 계획을 수립했습니다.");
 
     state = state
@@ -120,20 +197,47 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
         .map_err(|e| CanopusError::InvalidInput(e.to_string()))?;
     log::info!("[workflow] state: {:?}", state);
 
+    let stage = StageTimer::start("code");
     let code_task = AgentTask::for_agenda("TASK-2-code", &agenda, AgentRole::Coder);
-    backend.submit(&code_task).await?;
-    let code_result = runtime
-        .run(
-            &code_task,
-            &AgentContext {
-                repo_path: parsed.repo.clone(),
-            },
-            &plan_result.artifacts,
-        )
-        .await?;
+    try_stage!(
+        backend.submit(&code_task).await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let code_result = try_stage!(
+        runtime
+            .run(
+                &code_task,
+                &AgentContext {
+                    repo_path: parsed.repo.clone(),
+                },
+                &plan_result.artifacts,
+            )
+            .await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let mut code_artifacts = Vec::new();
     for artifact in &code_result.artifacts {
-        artifact_store.save(artifact)?;
+        code_artifacts.push(
+            try_stage!(
+                artifact_store.save(artifact),
+                &stage,
+                &parsed.state,
+                &agenda.id,
+                &mut stage_records
+            )
+            .path
+            .display()
+            .to_string(),
+        );
     }
+    stage_records.push(stage.finish("ok", code_artifacts));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
     notify_discord("💻 **Code 완료** — 코더가 변경사항을 적용했습니다.");
 
     state = state
@@ -141,39 +245,106 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
         .map_err(|e| CanopusError::InvalidInput(e.to_string()))?;
     log::info!("[workflow] state: {:?}", state);
 
-    let diff = tools.changed_files(&parsed.repo)?;
-    artifact_store.save(&Artifact {
+    let stage = StageTimer::start("check");
+    let mut check_artifacts = Vec::new();
+    let diff = try_stage!(
+        tools.changed_files(&parsed.repo),
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let diff_artifact = Artifact {
         task_id: code_task.id.clone(),
         kind: ArtifactKind::Diff,
         content: format!("# Diff\n\n```text\n{}```\n", diff.stdout),
-    })?;
+    };
+    check_artifacts.push(
+        try_stage!(
+            artifact_store.save(&diff_artifact),
+            &stage,
+            &parsed.state,
+            &agenda.id,
+            &mut stage_records
+        )
+        .path
+        .display()
+        .to_string(),
+    );
 
-    let check = tools.run_check(&parsed.repo, &["git", "diff", "--check"])?;
-    artifact_store.save(&Artifact {
+    let check = try_stage!(
+        tools.run_check(&parsed.repo, &["git", "diff", "--check"]),
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let check_artifact = Artifact {
         task_id: code_task.id.clone(),
         kind: ArtifactKind::TestResult,
         content: format!(
             "# Check\n\nstatus: {}\n\n## stdout\n```text\n{}```\n\n## stderr\n```text\n{}```\n",
             check.status, check.stdout, check.stderr
         ),
-    })?;
+    };
+    check_artifacts.push(
+        try_stage!(
+            artifact_store.save(&check_artifact),
+            &stage,
+            &parsed.state,
+            &agenda.id,
+            &mut stage_records
+        )
+        .path
+        .display()
+        .to_string(),
+    );
+    stage_records.push(stage.finish("ok", check_artifacts));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
 
+    let stage = StageTimer::start("review");
     let review_task = AgentTask::for_agenda("TASK-3-review", &agenda, AgentRole::Reviewer);
-    backend.submit(&review_task).await?;
+    try_stage!(
+        backend.submit(&review_task).await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
     let mut review_prior: Vec<Artifact> = plan_result.artifacts.clone();
     review_prior.extend(code_result.artifacts.iter().cloned());
-    let review_result = runtime
-        .run(
-            &review_task,
-            &AgentContext {
-                repo_path: parsed.repo.clone(),
-            },
-            &review_prior,
-        )
-        .await?;
+    let review_result = try_stage!(
+        runtime
+            .run(
+                &review_task,
+                &AgentContext {
+                    repo_path: parsed.repo.clone(),
+                },
+                &review_prior,
+            )
+            .await,
+        &stage,
+        &parsed.state,
+        &agenda.id,
+        &mut stage_records
+    );
+    let mut review_artifacts = Vec::new();
     for artifact in &review_result.artifacts {
-        artifact_store.save(artifact)?;
+        review_artifacts.push(
+            try_stage!(
+                artifact_store.save(artifact),
+                &stage,
+                &parsed.state,
+                &agenda.id,
+                &mut stage_records
+            )
+            .path
+            .display()
+            .to_string(),
+        );
     }
+    stage_records.push(stage.finish("ok", review_artifacts));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
     state = state
         .transition_to(WorkflowState::Reviewed)
         .map_err(|e| CanopusError::InvalidInput(e.to_string()))?;
@@ -183,6 +354,12 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
         .transition_to(WorkflowState::Completed)
         .map_err(|e| CanopusError::InvalidInput(e.to_string()))?;
     log::info!("[workflow] state: {:?}", state);
+    let stage = StageTimer::start("complete");
+    stage_records.push(stage.finish(
+        "ok",
+        vec![parsed.state.join("runs").join(format!("{}.json", agenda.id)).display().to_string()],
+    ));
+    persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
 
     println!(
         "Canopus task {} completed local patch flow on branch {branch}",
@@ -211,8 +388,7 @@ async fn watch(args: &[String]) -> CanopusResult<()> {
                 for task in tasks {
                     log::info!("[watch] Processed 태스크 발견: {}", task.task_id);
                     let branch = format!("canopus/{}", task.task_id);
-                    if let Err(e) =
-                        post_approval(repo, &branch, &task.task_id, None, &tools).await
+                    if let Err(e) = post_approval(repo, &branch, &task.task_id, None, &tools).await
                     {
                         log::error!("[watch] post_approval 실패 {}: {e}", task.task_id);
                     }
@@ -241,15 +417,7 @@ async fn post_approval(
     tools.run_check(
         repo,
         &[
-            "gh",
-            "pr",
-            "create",
-            "--title",
-            &pr_title,
-            "--body",
-            &pr_body,
-            "--base",
-            "main",
+            "gh", "pr", "create", "--title", &pr_title, "--body", &pr_body, "--base", "main",
         ],
     )?;
 
@@ -280,6 +448,68 @@ fn artifacts(args: &[String]) -> CanopusResult<()> {
         ));
     }
     println!("artifacts for {} are under .canopus/artifacts", args[0]);
+    Ok(())
+}
+
+struct StageTimer {
+    name: String,
+    started_at: SystemTime,
+    started_marker: String,
+    instant: Instant,
+}
+
+impl StageTimer {
+    fn start(name: impl Into<String>) -> Self {
+        let started_at = SystemTime::now();
+        Self {
+            name: name.into(),
+            started_at,
+            started_marker: time_marker(started_at),
+            instant: Instant::now(),
+        }
+    }
+
+    fn finish(self, status: impl Into<String>, artifacts: Vec<String>) -> StageRecord {
+        self.record(status, artifacts)
+    }
+
+    fn record(&self, status: impl Into<String>, artifacts: Vec<String>) -> StageRecord {
+        let ended_at = SystemTime::now();
+        StageRecord {
+            name: self.name.clone(),
+            started_at: self.started_marker.clone(),
+            ended_at: time_marker(ended_at),
+            duration_secs: self.instant.elapsed().as_secs().max(
+                ended_at
+                    .duration_since(self.started_at)
+                    .unwrap_or_default()
+                    .as_secs(),
+            ),
+            status: status.into(),
+            artifacts,
+        }
+    }
+}
+
+fn time_marker(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    format!("unix:{secs}")
+}
+
+fn persist_run_records(
+    state: &Path,
+    agenda_id: &str,
+    records: &[StageRecord],
+) -> CanopusResult<()> {
+    let runs_dir = state.join("runs");
+    fs::create_dir_all(&runs_dir)?;
+    let path = runs_dir.join(format!("{agenda_id}.json"));
+    let json = serde_json::to_vec_pretty(records)
+        .map_err(|e| CanopusError::Runtime(format!("serialize stage records: {e}")))?;
+    fs::write(path, json)?;
     Ok(())
 }
 

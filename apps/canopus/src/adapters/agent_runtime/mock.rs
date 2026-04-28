@@ -33,7 +33,10 @@ impl AgentRuntime for MockAgentRuntime {
                 let file_content = if context_summary.is_empty() {
                     format!("{}\n", task.prompt)
                 } else {
-                    format!("{}\n\n# Prior Context\n\n{}\n", task.prompt, context_summary)
+                    format!(
+                        "{}\n\n# Prior Context\n\n{}\n",
+                        task.prompt, context_summary
+                    )
                 };
                 let output = context.repo_path.join("canopus-mock-output.txt");
                 fs::write(&output, &file_content)?;

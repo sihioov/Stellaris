@@ -14,3 +14,9 @@ fn custom_task_type_can_represent_application_workloads() {
 
     assert_eq!(decoded, task_type);
 }
+
+#[test]
+fn pending_proposal_status_serializes_stably() {
+    let json = serde_json::to_string(&dysonsphere::status::TaskStatus::PendingProposal).unwrap();
+    assert_eq!(json, "\"PendingProposal\"");
+}
