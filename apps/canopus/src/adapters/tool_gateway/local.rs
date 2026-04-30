@@ -1,6 +1,6 @@
 use crate::core::{CanopusError, CanopusResult};
 use crate::ports::{CommandOutput, ToolGateway};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy)]
@@ -38,21 +38,66 @@ impl LocalToolGateway {
 }
 
 fn check_policy(repo: &Path, command: &[&str]) -> CanopusResult<()> {
-    match command {
-        ["git", "push", args @ ..] => check_git_push_policy(repo, args),
-        ["git", "reset", "--hard", ..] => deny("policy: git reset --hard denied"),
-        ["git", "clean", args @ ..] if args.iter().any(|arg| is_force_clean_arg(arg)) => {
+    if command.first() != Some(&"git") {
+        return Ok(());
+    }
+
+    let Some((subcommand_index, subcommand)) = find_git_subcommand(command) else {
+        return Ok(());
+    };
+    let global_args = &command[1..subcommand_index];
+    let args = &command[subcommand_index + 1..];
+
+    match subcommand {
+        "push" => check_git_push_policy(repo, global_args, args),
+        "reset" if args.contains(&"--hard") => deny("policy: git reset --hard denied"),
+        "clean" if args.iter().any(|arg| is_force_clean_arg(arg)) => {
             deny("policy: git clean -f denied")
         }
         _ => Ok(()),
     }
 }
 
-fn check_git_push_policy(repo: &Path, args: &[&str]) -> CanopusResult<()> {
-    if args.iter().any(|arg| {
-        matches!(*arg, "--force" | "-f" | "--force-with-lease")
-            || arg.starts_with("--force-with-lease=")
-    }) {
+/// Skip git global options to locate the actual subcommand before applying
+/// policy. Without this normalization, commands such as `git -C repo push`
+/// can bypass deny rules that match only `["git", "push", ..]`.
+fn find_git_subcommand<'a>(command: &[&'a str]) -> Option<(usize, &'a str)> {
+    let mut index = 1; // skip "git"
+    while index < command.len() {
+        match command[index] {
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--exec-path"
+            | "--config-env" => index += 2,
+            arg if arg.starts_with("--git-dir=")
+                || arg.starts_with("--work-tree=")
+                || arg.starts_with("--namespace=")
+                || arg.starts_with("--exec-path=")
+                || arg.starts_with("--config-env=")
+                || (arg.starts_with("-c") && arg.len() > 2) =>
+            {
+                index += 1;
+            }
+            "--no-pager"
+            | "--bare"
+            | "-p"
+            | "--paginate"
+            | "--no-replace-objects"
+            | "--literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs"
+            | "--no-optional-locks"
+            | "--version"
+            | "--help" => {
+                index += 1;
+            }
+            _ => return Some((index, command[index])),
+        }
+    }
+    None
+}
+
+fn check_git_push_policy(repo: &Path, global_args: &[&str], args: &[&str]) -> CanopusResult<()> {
+    if args.iter().any(|arg| is_force_push_arg(arg)) {
         return deny("policy: force push denied");
     }
 
@@ -60,11 +105,22 @@ fn check_git_push_policy(repo: &Path, args: &[&str]) -> CanopusResult<()> {
         return deny("policy: direct push to protected branch denied");
     }
 
-    if push_may_target_current_branch(args) && current_branch_is_protected(repo) {
-        return deny("policy: implicit push from protected branch denied");
+    if push_may_target_current_branch(args) {
+        let Some(policy_repo) = git_policy_repo(repo, global_args) else {
+            return deny("policy: implicit push with repository override denied");
+        };
+        if current_branch_is_protected(&policy_repo) {
+            return deny("policy: implicit push from protected branch denied");
+        }
     }
 
     Ok(())
+}
+
+fn is_force_push_arg(arg: &str) -> bool {
+    matches!(arg, "--force" | "--force-with-lease")
+        || arg.starts_with("--force-with-lease=")
+        || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('f'))
 }
 
 fn push_may_target_current_branch(args: &[&str]) -> bool {
@@ -90,18 +146,44 @@ fn current_branch_is_protected(repo: &Path) -> bool {
     matches!(branch.trim(), "main" | "master" | "develop")
 }
 
+fn git_policy_repo(repo: &Path, global_args: &[&str]) -> Option<PathBuf> {
+    let mut policy_repo = repo.to_path_buf();
+    let mut index = 0;
+
+    while index < global_args.len() {
+        match global_args[index] {
+            "-C" => {
+                let dir = *global_args.get(index + 1)?;
+                let dir = Path::new(dir);
+                policy_repo = if dir.is_absolute() {
+                    dir.to_path_buf()
+                } else {
+                    policy_repo.join(dir)
+                };
+                index += 2;
+            }
+            "--git-dir" | "--work-tree" => return None,
+            arg if arg.starts_with("--git-dir=") || arg.starts_with("--work-tree=") => {
+                return None;
+            }
+            "-c" | "--namespace" | "--exec-path" | "--config-env" => index += 2,
+            _ => index += 1,
+        }
+    }
+
+    Some(policy_repo)
+}
+
 fn is_force_clean_arg(arg: &str) -> bool {
-    arg.starts_with('-') && arg.contains('f')
+    arg == "--force" || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('f'))
 }
 
 fn targets_protected_branch(arg: &str) -> bool {
     let protected = ["main", "master", "develop"];
-    protected.iter().any(|branch| {
-        arg == *branch
-            || arg == format!("refs/heads/{branch}")
-            || arg.ends_with(&format!(":{branch}"))
-            || arg.ends_with(&format!(":refs/heads/{branch}"))
-    })
+    let refspec = arg.trim_start_matches('+');
+    let destination = refspec.split(':').next_back().unwrap_or(refspec);
+    let destination = destination.trim_start_matches("refs/heads/");
+    protected.contains(&destination)
 }
 
 fn deny(message: &str) -> CanopusResult<()> {
@@ -169,6 +251,7 @@ mod tests {
     fn policy_rejects_dangerous_git_commands() {
         for command in [
             vec!["git", "push", "--force", "origin", "feature"],
+            vec!["git", "push", "-uf", "origin", "feature"],
             vec!["git", "push", "-f", "origin", "feature"],
             vec![
                 "git",
@@ -178,6 +261,8 @@ mod tests {
                 "feature",
             ],
             vec!["git", "push", "origin", "main"],
+            vec!["git", "push", "origin", "+main"],
+            vec!["git", "push", "origin", "feature:main"],
             vec!["git", "push", "origin", "HEAD:refs/heads/master"],
             vec!["git", "reset", "--hard", "HEAD~1"],
             vec!["git", "clean", "-fdx"],
@@ -208,7 +293,32 @@ mod tests {
         assert!(check_policy(&repo, &["git", "push"]).is_err());
         assert!(check_policy(&repo, &["git", "push", "origin"]).is_err());
         assert!(check_policy(&repo, &["git", "push", "origin", "HEAD"]).is_err());
+        assert!(check_policy(&repo, &["git", "-C", repo.to_str().unwrap(), "push"]).is_err());
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn policy_normalizes_git_global_options_before_deny_rules() {
+        for command in [
+            vec!["git", "-C", ".", "push", "--force", "origin", "feature"],
+            vec![
+                "git",
+                "-c",
+                "protocol.version=2",
+                "push",
+                "--force-with-lease=feature",
+                "origin",
+                "feature",
+            ],
+            vec!["git", "--work-tree=.", "push", "origin", "main"],
+            vec!["git", "--no-pager", "reset", "--hard", "HEAD~1"],
+            vec!["git", "-C", ".", "clean", "-fdx"],
+        ] {
+            assert!(
+                check_policy(Path::new("."), &command).is_err(),
+                "{command:?} should be denied"
+            );
+        }
     }
 
     #[test]

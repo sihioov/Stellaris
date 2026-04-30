@@ -8,9 +8,10 @@ use crate::core::{
     StageRecord, WorkflowState,
 };
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
+use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 pub async fn run(args: Vec<String>) -> CanopusResult<()> {
     if args.len() < 2 {
@@ -453,18 +454,15 @@ fn artifacts(args: &[String]) -> CanopusResult<()> {
 
 struct StageTimer {
     name: String,
-    started_at: SystemTime,
-    started_marker: String,
+    started_at: DateTime<Utc>,
     instant: Instant,
 }
 
 impl StageTimer {
     fn start(name: impl Into<String>) -> Self {
-        let started_at = SystemTime::now();
         Self {
             name: name.into(),
-            started_at,
-            started_marker: time_marker(started_at),
+            started_at: Utc::now(),
             instant: Instant::now(),
         }
     }
@@ -474,29 +472,16 @@ impl StageTimer {
     }
 
     fn record(&self, status: impl Into<String>, artifacts: Vec<String>) -> StageRecord {
-        let ended_at = SystemTime::now();
+        let ended_at = Utc::now();
         StageRecord {
             name: self.name.clone(),
-            started_at: self.started_marker.clone(),
-            ended_at: time_marker(ended_at),
-            duration_secs: self.instant.elapsed().as_secs().max(
-                ended_at
-                    .duration_since(self.started_at)
-                    .unwrap_or_default()
-                    .as_secs(),
-            ),
+            started_at: self.started_at,
+            ended_at,
+            duration_secs: self.instant.elapsed().as_secs(),
             status: status.into(),
             artifacts,
         }
     }
-}
-
-fn time_marker(time: SystemTime) -> String {
-    let secs = time
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    format!("unix:{secs}")
 }
 
 fn persist_run_records(

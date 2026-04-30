@@ -1,11 +1,12 @@
 mod scanner;
 
+use chrono::{SecondsFormat, Utc};
 use dysonsphere::db::{FileTaskTable, TaskTable};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn discovery_id(discovery: &scanner::Discovery) -> String {
     let mut h = 0xcbf29ce484222325u64;
@@ -26,11 +27,7 @@ fn stable_hash_part(hash: &mut u64, bytes: &[u8]) {
 }
 
 fn now_marker() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    format!("unix:{secs}")
+    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 fn read_seen(path: &Path) -> Map<String, Value> {
@@ -182,6 +179,13 @@ mod tests {
         let stored = table.fetch(&id).await.unwrap().unwrap();
         assert_eq!(stored.meta.status, TaskStatus::PendingProposal);
         assert!(seen_path.exists());
+        let seen = read_seen(&seen_path);
+        let first_seen = seen[&id]["first_seen"].as_str().unwrap();
+        assert!(
+            !first_seen.starts_with("unix:"),
+            "seen ledger timestamp must be RFC3339"
+        );
+        chrono::DateTime::parse_from_rfc3339(first_seen).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 }

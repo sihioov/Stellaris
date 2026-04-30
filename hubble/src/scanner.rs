@@ -3,6 +3,7 @@ use dysonsphere::status::TaskStatus;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Hash)]
+#[allow(dead_code)] // v1 scanner currently emits Bug findings; other Canopus lanes are reserved.
 pub enum DiscoveryKind {
     Bug,
     Security,

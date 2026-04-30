@@ -158,3 +158,43 @@ impl TaskDataSource for FileDataSource {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dysonsphere::message::{TaskMeta, TaskType};
+
+    fn task(id: &str, status: TaskStatus) -> TaskMessage {
+        TaskMessage {
+            task_id: id.to_string(),
+            task_type: TaskType::NewsA,
+            payload: format!("payload-{id}"),
+            meta: TaskMeta {
+                status,
+                ..TaskMeta::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_pending_excludes_proposals_and_non_pending_statuses() {
+        let path =
+            std::env::temp_dir().join(format!("ton618-pending-filter-{}.json", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let tasks = vec![
+            task("pending", TaskStatus::Pending),
+            task("proposal", TaskStatus::PendingProposal),
+            task("review", TaskStatus::PendingReview),
+            task("dispatched", TaskStatus::Dispatched),
+            task("failed", TaskStatus::Failed),
+        ];
+        fs::write(&path, serde_json::to_string(&tasks).unwrap()).unwrap();
+
+        let datasource = FileDataSource::new(path.clone());
+        let fetched = datasource.fetch_pending().await.unwrap();
+
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].task_id, "pending");
+        let _ = fs::remove_file(path);
+    }
+}

@@ -89,6 +89,16 @@ async fn submit_creates_branch_patch_backend_task_and_artifacts() {
     assert!(records.iter().any(|record| record["name"] == "plan"));
     assert!(records.iter().any(|record| record["name"] == "check"));
     assert!(records.iter().any(|record| record["name"] == "complete"));
+    for record in records {
+        let started_at = record["started_at"].as_str().unwrap();
+        let ended_at = record["ended_at"].as_str().unwrap();
+        assert!(
+            !started_at.starts_with("unix:"),
+            "started_at must be RFC3339, got {started_at}"
+        );
+        chrono::DateTime::parse_from_rfc3339(started_at).unwrap();
+        chrono::DateTime::parse_from_rfc3339(ended_at).unwrap();
+    }
 
     let branch = Command::new("git")
         .args(["branch", "--show-current"])
@@ -129,6 +139,16 @@ async fn submit_records_failed_prepare_stage() {
     assert!(records
         .iter()
         .any(|record| record["name"] == "prepare" && record["status"] == "failed"));
+    let failed = records
+        .iter()
+        .find(|record| record["name"] == "prepare" && record["status"] == "failed")
+        .unwrap();
+    let started_at = failed["started_at"].as_str().unwrap();
+    assert!(
+        !started_at.starts_with("unix:"),
+        "failed stage timestamp must be RFC3339"
+    );
+    chrono::DateTime::parse_from_rfc3339(started_at).unwrap();
 
     let _ = fs::remove_dir_all(repo);
 }

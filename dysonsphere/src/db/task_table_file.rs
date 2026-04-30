@@ -167,3 +167,47 @@ impl TaskTable for FileTaskTable {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{TaskMeta, TaskType};
+
+    fn task(id: &str, status: TaskStatus) -> TaskMessage {
+        TaskMessage {
+            task_id: id.to_string(),
+            task_type: TaskType::NewsA,
+            payload: format!("payload-{id}"),
+            meta: TaskMeta {
+                status,
+                ..TaskMeta::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn update_status_if_current_does_not_resurrect_changed_tasks() {
+        let path = std::env::temp_dir().join(format!(
+            "dysonsphere-cas-status-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table
+            .create(task("T1", TaskStatus::Dispatched))
+            .await
+            .unwrap();
+
+        assert!(table
+            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::PendingReview)
+            .await
+            .unwrap());
+        assert!(!table
+            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::Failed)
+            .await
+            .unwrap());
+        let stored = table.fetch("T1").await.unwrap().unwrap();
+        assert_eq!(stored.meta.status, TaskStatus::PendingReview);
+        let _ = fs::remove_file(path);
+    }
+}

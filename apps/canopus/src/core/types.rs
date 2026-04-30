@@ -1,4 +1,5 @@
 use crate::core::error::{CanopusError, CanopusResult};
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agenda {
@@ -109,8 +110,8 @@ pub struct AgentRunResult {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageRecord {
     pub name: String,
-    pub started_at: String,
-    pub ended_at: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
     pub duration_secs: u64,
     pub status: String,
     pub artifacts: Vec<String>,
