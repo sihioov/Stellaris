@@ -1,3 +1,10 @@
+// v1은 ton618의 file-backed scheduler/dispatcher만 사용한다. RabbitMQ
+// dispatch (`task/dispatcher.rs`), cron-style scheduling (`scheduler/`),
+// `nosql`/`rdb` 모듈은 v2까지 reserved 상태이므로 본 crate-wide allow를 둔다.
+// Reserved surface가 활성화될 때(예: v2 dispatcher 도입 시) 본 allow를
+// 제거해 unused 경로가 다시 dead_code lint에 잡히도록 해야 한다.
+#![allow(dead_code, unused_imports, clippy::large_enum_variant)]
+
 mod datasource;
 mod file;
 mod nosql;
