@@ -226,7 +226,42 @@ def _payload_data(task: dict) -> dict:
         parsed = json.loads(payload)
         return parsed if isinstance(parsed, dict) else {"raw": payload}
     except (json.JSONDecodeError, TypeError):
+        if isinstance(payload, str):
+            kv = {}
+            for line in payload.splitlines():
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key:
+                    kv[key] = value.strip()
+            if kv:
+                kv["raw"] = payload
+                return kv
         return {"raw": payload}
+
+
+def _artifact_lookup_ids(task: dict, payload: dict) -> list[str]:
+    ids = []
+
+    def add(value) -> None:
+        if value is None:
+            return
+        value = str(value).strip()
+        if value and value not in ids:
+            ids.append(value)
+
+    add(task.get("task_id"))
+    for key in (
+        "agenda_id",
+        "canopus_agenda_id",
+        "run_id",
+        "artifact_task_id",
+        "backend_id",
+        "task_id",
+    ):
+        add(payload.get(key))
+    return ids
 
 
 def _artifact_paths(project: dict | None, task: dict) -> list[str]:
@@ -236,18 +271,22 @@ def _artifact_paths(project: dict | None, task: dict) -> list[str]:
     if not state_root:
         return []
 
-    task_id = task.get("task_id", "")
-    candidates = [
-        os.path.join(state_root, "artifacts", task_id),
-        os.path.join(state_root, "runs", f"{task_id}.json"),
-    ]
+    payload = _payload_data(task)
+    candidates = []
+    for lookup_id in _artifact_lookup_ids(task, payload):
+        candidates.extend([
+            os.path.join(state_root, "artifacts", lookup_id),
+            os.path.join(state_root, "runs", f"{lookup_id}.json"),
+        ])
     found = []
     for path in candidates:
         if os.path.isdir(path):
             for root, _, files in os.walk(path):
                 for name in files:
-                    found.append(os.path.join(root, name))
-        elif os.path.exists(path):
+                    found_path = os.path.join(root, name)
+                    if found_path not in found:
+                        found.append(found_path)
+        elif os.path.exists(path) and path not in found:
             found.append(path)
     return found[:10]
 
@@ -605,7 +644,12 @@ async def cmd_show(ctx, task_id: str = None):
         if artifacts
         else "- (없음 또는 아직 생성 전)"
     )
-    request = payload.get("request") or payload.get("raw") or target.get("payload", "")
+    request = (
+        payload.get("request")
+        or payload.get("prompt")
+        or payload.get("raw")
+        or target.get("payload", "")
+    )
     repo_path = payload.get("repo_path") or (project or {}).get("repo_path", "?")
     task_type = target.get("task_type", "?")
     links = []
