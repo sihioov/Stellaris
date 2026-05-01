@@ -12,6 +12,7 @@ Project documentation covering architecture, commit conventions, code review gui
 |------|-------------|
 | `architecture.md` | Current source of truth for Stellaris core, Canopus app, and discovery-source boundaries |
 | `canopus-v1.md` | Current Canopus v1 app/workload scope, modules, safety model, and validation |
+| `stellaris-v2-agent-collaboration.md` | Planned v2 direction for room-based multi-agent collaboration, role agents, meetings, decisions, and action items |
 | `commit.md` | Commit message conventions — module prefix format, types, examples |
 | `review.md` | Code review guidelines and checklist |
 | `snippet.md` | Useful code snippets and patterns for the project |

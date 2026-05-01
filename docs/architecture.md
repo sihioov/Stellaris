@@ -8,6 +8,16 @@ Stellaris is a general-purpose distributed task processing platform. Canopus is 
 Producer → Task Contract / Queue → Scheduler → Worker → App / Processing → Result
 ```
 
+## Future Direction: v2 Agent Collaboration
+
+Stellaris v2 is planned to evolve from direct command-to-task automation into a room-based multi-agent collaboration system. In that model, Discord/Slack/Web/CLI are transport bots, while planner, developer, designer, reviewer, QA, security, and writer agents participate in meetings, form proposals, make decisions, and emit executable tasks.
+
+The v2 target has two operating modes: request-driven development mode, where humans ask for projects, questions, features, fixes, reviews, designs, or documentation; and autonomous maintenance mode, where agents observe the project, discuss improvements, propose maintenance work, and create approved action items before execution.
+
+For both modes, GitHub Issues/Projects are the official agenda and status ledger, Discord is the human-visible meeting room for agent discussion, and explicit user confirmation is required before finalizing decisions or creating executable work.
+
+See [Stellaris v2 Agent Collaboration Architecture](stellaris-v2-agent-collaboration.md).
+
 ## Core Components
 
 | Component | Layer | Responsibility |

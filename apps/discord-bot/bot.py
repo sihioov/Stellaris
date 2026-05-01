@@ -12,6 +12,7 @@ Project structure:
 Commands:
   !new-project <name> <path>  - Create category + 4 channels + register
   !register <path>            - Register current category's repo path
+  !ask <question>             - Ask a direct question without creating a task
   !run <request>              - Add task (agent type from channel name)
   !approve [task_id]          - Approve PendingReview task
   !reject  [task_id]          - Reject  PendingReview task
@@ -23,8 +24,10 @@ Commands:
 
 Authorization: set ALLOWED_USER_IDS=123456789,987654321 in env to restrict access.
 """
+import asyncio
 import json
 import os
+import shlex
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -48,6 +51,19 @@ PROJECTS_JSON_PATH = os.environ.get(
 )
 TASKS_DIR = os.environ.get("TASKS_DIR", os.path.dirname(__file__))
 CANOPUS_STATE_PATH = os.environ.get("CANOPUS_STATE_PATH")
+ASK_COMMAND = os.environ.get("ASK_COMMAND", "").strip()
+
+
+def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+ASK_TIMEOUT_SECONDS = env_int("ASK_TIMEOUT_SECONDS", 30, 1, 300)
+ASK_MAX_OUTPUT_CHARS = env_int("ASK_MAX_OUTPUT_CHARS", 1800, 200, 1800)
 
 _raw_ids = os.environ.get("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS: set = {
@@ -215,6 +231,62 @@ def is_authorized(ctx) -> bool:
     if not ALLOWED_USER_IDS:
         return True
     return ctx.author.id in ALLOWED_USER_IDS
+
+
+def truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 20)].rstrip() + "\n…(truncated)"
+
+
+async def run_ask_backend(question: str) -> tuple[str | None, str | None]:
+    """Run the configured direct-answer backend without touching the task queue."""
+    if not ASK_COMMAND:
+        return None, (
+            "⚠️ `!ask` 답변 백엔드가 설정되지 않았습니다.\n"
+            "`ASK_COMMAND` 환경변수에 질문을 stdin으로 받는 명령을 설정해주세요."
+        )
+
+    try:
+        argv = shlex.split(ASK_COMMAND, posix=os.name != "nt")
+    except ValueError as exc:
+        return None, f"⚠️ `ASK_COMMAND` 파싱 실패: {exc}"
+    if not argv:
+        return None, "⚠️ `ASK_COMMAND`가 비어 있습니다."
+
+    env = os.environ.copy()
+    env["STELLARIS_ASK_PROMPT"] = question
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+    except FileNotFoundError:
+        return None, f"⚠️ `ASK_COMMAND` 실행 파일을 찾을 수 없습니다: `{argv[0]}`"
+    except OSError as exc:
+        return None, f"⚠️ `ASK_COMMAND` 실행 실패: {exc}"
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(question.encode("utf-8")),
+            timeout=ASK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return None, f"⏱️ `!ask` 시간이 초과되었습니다 ({ASK_TIMEOUT_SECONDS}s)."
+
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        details = truncate_text(err or out or "no output", 700)
+        return None, f"❌ `ASK_COMMAND` 실패(exit {proc.returncode}):\n```text\n{details}\n```"
+    if not out:
+        return None, "⚠️ `ASK_COMMAND`가 빈 답변을 반환했습니다."
+    return truncate_text(out, ASK_MAX_OUTPUT_CHARS), None
 
 
 
@@ -437,6 +509,26 @@ async def cmd_register(ctx, *, repo_path: str = None):
         f"📁 카테고리: **{category.name}**\n"
         f"📂 Repo: `{repo_path}`"
     )
+
+
+@bot.command(name="ask")
+async def cmd_ask(ctx, *, question: str = None):
+    """Ask a direct question without creating a pipeline task."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+    if not question:
+        await ctx.send("사용법: `!ask <질문>`\n예: `!ask 오늘 날씨 어때?`")
+        return
+
+    async with ctx.typing():
+        answer, error = await run_ask_backend(question)
+
+    if error:
+        await ctx.send(error)
+        return
+
+    await ctx.send(f"💬 **Ask**\n{answer}")
 
 
 @bot.command(name="run")
@@ -727,6 +819,10 @@ async def cmd_help(ctx):
         "ㄴ `#planning` → 플래너만 실행\n"
         "ㄴ `#development` → 전체 파이프라인 (Plan+Code+Review)\n"
         "ㄴ `#review` → 리뷰어만 실행\n\n"
+
+        "**💬 즉답 질문**\n"
+        "`!ask <질문>` — task를 만들지 않고 바로 질문\n"
+        "ㄴ `ASK_COMMAND` 환경변수로 답변 백엔드 설정 필요\n\n"
 
         "**✅ 작업 승인/거절**\n"
         "`!approve [task_id]` — 작업 승인 → Processed\n"
