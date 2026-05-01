@@ -6,7 +6,7 @@
 - 이 규칙 세트는 Stellaris 프로젝트의 대한 정리 및 AI 답변에 관련한 규칙이다
 
 ## 프로젝트 구성
-### [Hubble](scrapper)
+### Hubble
 - 이름 유래: 최초 우주 탐사 개
 - 역할: 뉴스, SNS등 외부 데이터 수집
 - 언어: python
@@ -17,7 +17,7 @@
   - 여러 Telescope 인스턴스를 동시에 띄워 다양한 데이터 소스 대응
   - 각 인스턴스마다 hubble 같은 기존에 실제로 존재하는 우주 탐사선을 인스턴스명으로 채용
 
-### [TON618](taskQueue)
+### TON618
 - 역할: DB/파일에서 수집된 데이터를 읽어 TaskMessage 생성 및 분배
 - 언어: Rust
 - 구조
@@ -26,7 +26,7 @@
 - 추후
   - TaskSender(이름 미정) 트레잇 설계 예정 (MQ 전환을 위한 구조 대비)
 
-### [Laniakea](worker)
+### Laniakea
 - 역할: TaskMessage 처리
 - 언어: Rust
 - 구조
@@ -37,7 +37,7 @@
   - 여러 Laniakea 인스턴스를 동시에 실행 가능
   - Job 구조 도입시에 확장가능
 
-### [DysonSphere](common)
+### Dysonsphere
 - 역할: 공통 모듈
 - 언어: Rust
 - 주요 구성

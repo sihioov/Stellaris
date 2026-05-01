@@ -31,6 +31,18 @@ v1은 **agent 간 대화가 없다**. Stage 사이의 정보 전달은 **artifac
 
 ---
 
+
+## 1.1 아키텍처 경계
+
+Canopus v1은 Stellaris Core 자체가 아니라, Stellaris 위에서 실행되는 AI 개발 자동화 app/workload다. 기준 경계는 [`stellaris-system-direction.md`](./stellaris-system-direction.md)를 따른다.
+
+```text
+Stellaris Core = Hubble / Dysonsphere / TON618 / Laniakea 기반 분산 작업 처리
+Canopus App   = AI 개발 workflow, tool policy, artifact, approval semantics
+```
+
+따라서 Canopus는 TON618 scheduler나 Laniakea worker를 대체하지 않는다. v1 구현은 Laniakea가 실행할 수 있는 app workload로 유지한다.
+
 ## 2. v1 범위
 
 ## 2.1 In Scope

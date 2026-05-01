@@ -132,7 +132,8 @@ The first Canopus milestone is a Local Patch MVP: a CLI request creates a local 
 ## 📚 프로젝트 문서
 
 자세한 내용은 다음 문서를 참고하세요:
-- [프로젝트 개요 및 아키텍처](docs/stellaris_summary.md)
+- [프로젝트 개요 및 아키텍처](docs/architecture.md)
+- [Canopus v1 앱 설계](docs/canopus-v1.md)
 - [모듈별 디렉토리 구조](docs/stellaris-deck.md)
 - [개발 가이드라인](docs/commit.md)
 - [코드 스니펫 및 사용 예제](docs/snippet.md)
@@ -165,7 +166,7 @@ cargo run -p ton618
 ## 📚 문서
 
 자세한 내용은 다음 문서를 참고하세요:
-- [프로젝트 개요](docs/stellaris_summary.md)
+- [프로젝트 개요](docs/architecture.md)
 - [디렉토리 구조](docs/stellaris-deck.md)
 - [커밋 메시지 가이드](docs/commit.md)
 - [코드 스니펫](docs/snippet.md)

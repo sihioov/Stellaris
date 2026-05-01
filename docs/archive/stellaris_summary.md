@@ -2,10 +2,12 @@
 # 📌 Stellaris Project summary
 
 ### ࣪🪐 Project summary
-- **Proejct name:** Stellaris
-- **Goal:** High-Performance Data Distributed Processing System
+- **Project name:** Stellaris
+- **Goal:** General-purpose distributed task processing platform
+- **Canonical direction:** see [`stellaris-system-direction.md`](./stellaris-system-direction.md)
 - **Architecture:**  
-  Scraper(Hubble, Python) → TaskQueue([TON618], Rust) → Worker(Laniakea, Rust) → AI/Processing → Result save(Redis)
+  Producer(Hubble or another source) → Task Contract/Queue(Dysonsphere) → Scheduler([TON618], Rust) → Worker(Laniakea, Rust) → App/Processing workload → Result/Status
+- **First advanced app/workload:** Canopus, an AI development automation app built on top of Stellaris, not a replacement for the Stellaris core.
 
 ---
 
@@ -31,14 +33,26 @@
 - Instance name: Use glaxy name (ex: Andromeda, M87)
 - Save processing results to 🛢️Redis
 
+### 🌠 [Canopus] (AI Development App)
+- Role: Stellaris 위에서 실행되는 AI 개발 자동화 workload/app
+- 위치: `apps/canopus`
+- 책임: agent workflow, tool policy, artifacts, approval gate, git/PR orchestration
+- 경계: TON618/Laniakea를 대체하지 않고, Laniakea가 실행하는 app으로 동작
+
+### 🔭 [Kepler] (Codebase Discovery Source)
+- Role: 코드베이스 내부 신호를 찾는 discovery source
+- 예: clippy warning, test failure, coverage gap, code smell, security finding
+- 원칙: 발견은 즉시 실행하지 않고 `PendingProposal`로 등록한 뒤 사람이 승격
+
 ---
 
 ## 🔗 메시지 플로우
 
-1. Hubble → DB에 데이터 저장
-2. TON618 → DB에서 데이터 읽고 TaskMessage 생성
-3. Task → Laniakea에 전달
-4. 처리 결과는 Redis에 저장
+1. Hubble/Kepler/Discord/CLI 등 producer 또는 intake가 TaskMessage 또는 PendingProposal을 등록
+2. 승인된 Pending task만 TON618이 읽고 dispatch
+3. Laniakea가 task type에 맞는 worker/app을 실행
+4. Canopus 같은 app workload는 artifact/status/audit을 기록
+5. 처리 결과는 storage/Redis/파일 backend에 저장
 
 ---
 
@@ -55,6 +69,7 @@
 ---
 
 ## 🧠 Design philosophy
+- Stellaris Core와 Canopus App의 책임 경계를 분리
 - 메시지는 Command가 아닌 Task 개념으로 정리 (주체의 차이)
 - 구성 요소 간 경계를 명확히 함
 - 모든 구성 요소에 세계관 기반 코드네임 사용

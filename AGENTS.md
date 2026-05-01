@@ -1,75 +1,25 @@
-<!-- Generated: 2026-01-15 | Updated: 2026-04-25 -->
+# Repository Guidelines
 
-# STELLARIS PROJECT KNOWLEDGE BASE
+## Project Structure & Module Organization
+Stellaris is a Rust workspace for distributed task processing. Core crates live at the repository root: `dysonsphere/` contains shared task contracts, status types, storage, discovery, and queue abstractions; `ton618/` schedules and dispatches pending work; `laniakea/` executes tasks; `hubble/` collects external signals; `kepler/` scans codebase findings. AI development automation lives in `apps/canopus/`, and the Discord control surface lives in `apps/discord-bot/`. Project documentation and architecture notes are under `docs/`; use `docs/architecture.md` for the current core/app responsibility boundary.
 
-**Generated:** 2026-01-15 18:26:09 UTC
-**Commit:** bfe6588
-**Branch:** main
+## Build, Test, and Development Commands
+- `cargo build --workspace` — build all Rust crates.
+- `cargo check --workspace` — fast compile/type check without full build artifacts.
+- `cargo test --workspace` — run all Rust unit and integration tests.
+- `cargo fmt --all -- --check` — verify Rust formatting before review.
+- `cargo clippy --workspace --all-targets -- -D warnings` — enforce lint cleanliness.
+- `cargo run -p ton618`, `cargo run -p laniakea`, `cargo run -p hubble`, `cargo run -p kepler` — run individual services.
+- `python3 -m py_compile apps/discord-bot/bot.py` — syntax-check the Discord bot.
 
-## OVERVIEW
-High-performance distributed data processing system in Rust. Workspace with 4 crates: dysonsphere (core lib), ton618 (scheduler), laniakea (worker), hubble (collector).
+## Coding Style & Naming Conventions
+Use Rust 2021 conventions, `rustfmt`, and clear module boundaries. Prefer trait-based abstractions in shared crates and keep Canopus-specific workflow logic inside `apps/canopus`. Use cosmic component names consistently: Dysonsphere for shared contracts, TON618 for scheduling, Laniakea for workers, Hubble/Kepler for discovery. Python code in `apps/discord-bot` should stay small, explicit, and configuration-driven.
 
-## STRUCTURE
-```
-./
-├── dysonsphere/    # Shared core library: TaskMessage, TaskStatus, db/mq abstractions
-├── ton618/         # Task queue & scheduler with priority-based job scheduling
-├── laniakea/       # Task processor (placeholder)
-├── hubble/         # Data collector (placeholder)
-├── docs/           # Project documentation (commit rules, architecture, snippets)
-└── target/         # Rust build artifacts (ignore)
-```
+## Testing Guidelines
+Place Rust unit tests near the code they cover and integration tests under each crate’s `tests/` directory, e.g. `apps/canopus/tests/*.rs`. Add regression tests for status transitions, scheduler filtering, tool policy, and discovery deduplication. Run `cargo test --workspace` before committing any Rust behavior change.
 
-## WHERE TO LOOK
-| Task | Location | Notes |
-|------|----------|-------|
-| Core data structures | dysonsphere/src/message.rs, status.rs | TaskMessage, TaskStatus, TaskMeta |
-| DB abstraction | dysonsphere/src/db/ | TaskTable trait + file-based impl |
-| Message queue | dysonsphere/src/mq/ | RabbitMQ abstraction |
-| Scheduler engine | ton618/src/scheduler/ | Job, Queue, Runner, Schedule |
-| Data sources | ton618/src/file.rs, nosql/, rdb/ | File-based implemented, DBs planned |
-| Task dispatch | ton618/src/task/dispatcher.rs | Routes tasks to handlers |
-| Commit format | docs/commit.md | Module prefix required: [ton618], [dysonsphere], etc. |
+## Commit & Pull Request Guidelines
+Follow `docs/commit.md`: use `[module] type: summary`, for example `[ton618] fix: filter pending proposal tasks`. Valid types include `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, and `style`. Include `(Closes #N)` for issue-backed work. PRs should describe intent, affected modules, validation commands, linked issues, and screenshots/logs for Discord or CLI UX changes.
 
-## CONVENTIONS
-- **Module prefix in commits**: `[module] type: summary (Closes #N)` format
-- **Module prefixes**: ton618, dysonsphere, hubble, laniakea, infra, docs
-- **Commit types**: feat, fix, refactor, docs, test, chore, style
-- **Async traits**: Uses `async-trait` crate
-- **Error handling**: Uses `anyhow` in ton618, custom Result in dysonsphere
-
-## ANTI-PATTERNS (THIS PROJECT)
-- Never use `[ton618/#12]` in commits - GitHub won't parse
-- Never use lowercase `closes` - use `Closes #N` for auto-close
-- Never mix module prefixes - one module per commit
-- Never skip issue numbers in commits
-
-## UNIQUE STYLES
-- **Cosmic naming**: Modules named after cosmic structures (Dysonsphere, TON618 black hole, Laniakea supercluster, Hubble telescope)
-- **Trait-based abstraction**: TaskDataSource, Job traits for extensibility
-- **Scheduler priority queue**: Custom implementation with Schedule type (fixed interval + cron)
-- **Tokio runtime**: Multi-threaded async across all crates
-
-## COMMANDS
-```bash
-# Build entire workspace
-cargo build
-
-# Run specific module
-cargo run -p ton618
-cargo run -p laniakea
-cargo run -p hubble
-
-# Check all crates
-cargo check --workspace
-
-# Run tests
-cargo test --workspace
-```
-
-## NOTES
-- dysonsphere is the only library crate; others are binaries
-- ton618 is most complex with scheduler subsystem
-- hubble and laniakea are currently placeholders (only main.rs)
-- File-based storage implemented (task_table_file.rs); DB implementations planned
-- RabbitMQ dependency in dysonsphere for message queue (currently minimal)
+## Security & Configuration Tips
+Do not commit `.env`, local Codex state, Python bytecode, `target/`, or OS metadata. Keep risky git/shell operations behind Canopus `ToolGateway` policy and require human approval before PR, merge, deploy, or protected-branch actions.

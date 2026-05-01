@@ -51,7 +51,7 @@ stellaris/                         ← 🛰️ Monorepo Root (Cargo workspace)
 │   └── canopus/                 ← portable AI development orchestration layer [MVP]
 │
 ├── docs/                          ← 📚 프로젝트 문서 [구현됨]
-│   ├── stellaris_summary.md       ← 프로젝트 개요 및 구조 [구현됨]
+│   ├── architecture.md            ← 현재 프로젝트 아키텍처 기준 [구현됨]
 │   ├── stellaris-deck.md          ← 디렉토리 구조 문서 [구현됨]
 │   ├── commit.md                  ← 커밋 메시지 가이드 [구현됨]
 │   └── snippet.md                 ← 코드 스니펫 모음 [구현됨]

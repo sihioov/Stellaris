@@ -10,14 +10,14 @@ Project documentation covering architecture, commit conventions, code review gui
 
 | File | Description |
 |------|-------------|
-| `stellaris_summary.md` | Full project architecture overview: components, message flow, tech stack, git strategy |
-| `stellaris-deck.md` | Project deck / presentation slides content |
-| `stellaris.drawio` | Architecture diagram (draw.io format) |
+| `architecture.md` | Current source of truth for Stellaris core, Canopus app, and discovery-source boundaries |
+| `canopus-v1.md` | Current Canopus v1 app/workload scope, modules, safety model, and validation |
 | `commit.md` | Commit message conventions — module prefix format, types, examples |
 | `review.md` | Code review guidelines and checklist |
 | `snippet.md` | Useful code snippets and patterns for the project |
 | `ai_rule.md` | Rules for AI agents working in this codebase |
 | `ai_orchestration_pipeline_summary.md` | AI orchestration pipeline design summary |
+| `archive/` | Historical architecture drafts, comparison notes, and implementation plans |
 
 ## For AI Agents
 
@@ -27,12 +27,12 @@ Project documentation covering architecture, commit conventions, code review gui
 - Do not regenerate documentation from this directory; these are manually maintained references
 
 ### Common Patterns
-- Architecture documents describe the intended pipeline: Hubble → TON618 → Laniakea
+- Architecture documents define the intended core/app split: Hubble/Dysonsphere/TON618/Laniakea as core, Canopus as app workload, Kepler/Hubble as discovery sources
 - Korean-language content appears in some docs (the project supports bilingual documentation)
 
 ## Dependencies
 
 ### Internal
-- References all four crates: dysonsphere, ton618, laniakea, hubble
+- References workspace crates and apps: dysonsphere, ton618, laniakea, hubble, kepler, and apps/canopus
 
 <!-- MANUAL: -->

@@ -22,7 +22,7 @@ The data scraper/collector binary. Named after the Hubble Space Telescope. Respo
 
 ### Working In This Directory
 - This crate is a placeholder — do not implement scraping logic until the architecture is finalized
-- The intended stack is Python (per `docs/stellaris_summary.md`), but a Rust binary skeleton exists
+- The intended stack is Python (per `docs/architecture.md`), but a Rust binary skeleton exists
 - When implemented, it should write to the same data store that TON618 reads from
 
 ### Testing Requirements
