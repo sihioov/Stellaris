@@ -6,4 +6,5 @@ members = [
     "laniakea",
     "apps/canopus",
     "hubble",
+    "kepler",
 ]

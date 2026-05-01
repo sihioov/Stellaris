@@ -47,7 +47,8 @@ v1은 **agent 간 대화가 없다**. Stage 사이의 정보 전달은 **artifac
 - GitHub Q&A Issue (Analyst stage)
 - Discord !approve / !reject로 작업 승인
 - 승인된 작업만 git push + gh pr create
-- Hubble의 자율 코드 스캐너 → 후보 task 등록
+- Kepler의 자율 코드 스캐너 → 후보 task 등록
+- Hubble의 외부 데이터 collector → 후보 task 등록 (v1은 source trait/stub만)
 - Tool Gateway 기본 policy (allowlist 기반)
 - File-based task storage (tasks-{category_id}.json)
 - 다중 프로젝트 지원 (Discord category = git repo)
@@ -74,7 +75,7 @@ v1은 **agent 간 대화가 없다**. Stage 사이의 정보 전달은 **artifac
 - Agent가 main branch에 직접 push
 - Approval 없이 PR merge / deploy
 - Discord 메시지를 source of truth로 쓰기
-- Hubble이 사람 확인 없이 모든 발견을 즉시 작업으로 변환 (현재 안티패턴 → §11에서 보완)
+- Kepler/Hubble 같은 discovery source가 사람 확인 없이 모든 발견을 즉시 작업으로 변환 (현재 안티패턴 → §11에서 보완)
 ```
 
 ---
@@ -176,12 +177,19 @@ v1은 **agent 간 대화가 없다**. Stage 사이의 정보 전달은 **artifac
 └──────────────────────────────────────────────────────────┘
 
            ┌──────────────────────────────────────┐
-           │   Hubble (Rust 자율 코드 스캐너)        │
+           │   Kepler (Rust 코드베이스 스캐너)      │
            │  - cargo clippy 기반 발견              │
            │  - workspace 등록 → 등록된 repo 감시   │
            │  - finding → "agenda 후보" task 등록   │
            │  - 단, status=PendingProposal로 표시   │
            │    (사람이 !approve 해야 Pending로 승격) │ ← v1 보완 포인트
+           └──────────────────────────────────────┘
+
+           ┌──────────────────────────────────────┐
+           │   Hubble (외부 데이터 collector)       │
+           │  - news/RSS/SNS 등 외부 signal 수집    │
+           │  - v1 통합 범위는 source trait/stub만  │
+           │  - Kepler와 같은 discovery gate 공유   │
            └──────────────────────────────────────┘
 ```
 
@@ -208,7 +216,7 @@ v1은 **agent 간 대화가 없다**. Stage 사이의 정보 전달은 **artifac
 - ALLOWED_USER_IDS 환경변수로 작동 권한 제한
 ```
 
-v1 변경 없음. 다만 §11 Hubble과 연계하여 `PendingProposal` 상태 처리만 추가.
+v1 변경 없음. 다만 §11 discovery source와 연계하여 `PendingProposal` 상태 처리만 추가.
 
 ## 4.2 Task Queue (`tasks-{category_id}.json`)
 
@@ -216,7 +224,7 @@ dysonsphere의 `TaskMessage` 스키마를 그대로 사용한다.
 
 ```rust
 TaskMessage {
-    task_id: String,            // "discord-<uuid12>" 또는 "hubble-<uuid12>"
+    task_id: String,            // "discord-<uuid12>", "kepler-<hash>", "hubble-<hash>"
     task_type: TaskType,        // Custom("canopus.planner") | Bug | Security | TestCoverage | UXImprovement
     payload: String,            // JSON {"request", "repo_path", ...}
     meta: TaskMeta {
@@ -231,7 +239,7 @@ v1 보완:
 
 ```text
 - payload schema를 typed struct로 굳힌다 (CanopusPayload)
-- TaskStatus에 PendingProposal 추가 (Hubble 자동 발견 → 사람 승인 대기)
+- TaskStatus에 PendingProposal 추가 (Kepler/Hubble 자동 발견 → 사람 승인 대기)
 - file lock은 fs2로 이미 적용됨 (커밋 ae989ac)
 - 카테고리별 파일 분리는 그대로 유지 (project isolation)
 ```
@@ -261,7 +269,7 @@ v1 보완:
 - Dispatched task 수신
 - handler를 task_type으로 분기
   └ canopus.planner / canopus.agent / canopus.reviewer
-  └ Bug / Security / TestCoverage / UXImprovement (Hubble 발 task)
+  └ Bug / Security / TestCoverage / UXImprovement (Kepler 발 task)
 - canopus 바이너리를 subprocess로 실행
 - 환경변수 주입: CANOPUS_REPO, CANOPUS_STATE
 - 종료 코드 처리 → Dispatched → PendingReview 또는 Failed
@@ -438,9 +446,9 @@ kind: Plan | Diff | TestResult | Review | QA | Log
 
 v2의 object storage 단계에서도 같은 namespace를 유지한다.
 
-## 4.9 Hubble (자율 코드 스캐너)
+## 4.9 Kepler / Hubble (discovery sources)
 
-§11에서 자세히 기술. v1에서는 **자동 task 등록 → 사람 승인** 흐름으로 보완한다.
+§11에서 자세히 기술. Kepler는 코드베이스 스캐너, Hubble은 외부 데이터 collector다. 둘 다 v1에서는 **자동 task 등록 → 사람 승인** 흐름으로 보완한다.
 
 ---
 
@@ -468,7 +476,7 @@ StageRecord          (stage 시작/종료/소요시간/artifact 목록)
 [v2 forward-compat — v1에서는 읽기/쓰기만 정의, 사용은 v2]
 ApprovalRequest stub (단일 PendingReview gate를 ApprovalRequest로 view)
 ProjectMapping stub  (category_id ↔ github_owner/repo 매핑)
-AgendaProposal       (Hubble의 PendingProposal task → 이걸로 view 가능)
+AgendaProposal       (Kepler/Hubble의 PendingProposal task → 이걸로 view 가능)
 ```
 
 `StageRecord`만 새 테이블/파일로 추가하고, 나머지는 typed wrapper만 만들면 충분하다.
@@ -503,7 +511,7 @@ AgendaProposal       (Hubble의 PendingProposal task → 이걸로 view 가능)
 !reject  [task_id]                PendingReview → Failed
 
 [v1 신규]
-!propose-approve [task_id]        PendingProposal → Pending (Hubble 발견 승격)
+!propose-approve [task_id]        PendingProposal → Pending (Kepler/Hubble 발견 승격)
 !propose-reject  [task_id]        PendingProposal → Failed
 !cancel [task_id]                 진행 중 task 취소 (Failed로 강제)
 
@@ -527,7 +535,7 @@ Dispatched        ← TON618이 Pending에서 picked
 PendingReview     ← Laniakea/Canopus가 stage 다 끝낸 직후
 Processed         ← !approve 후, watch가 PR까지 만들고 종료
 Failed            ← 어느 단계든 비정상 종료
-PendingProposal   ← Hubble이 자동 등록 (사람 승격 대기) — 신규
+PendingProposal   ← Kepler/Hubble이 자동 등록 (사람 승격 대기) — 신규
 ```
 
 WorkflowState 측면 (Canopus 내부, single run 안에서):
@@ -557,7 +565,7 @@ v1 ApprovalGate (단일 Discord 명령으로 처리):
               !reject  → Failed (terminal)
 
   ProposalGate (신규)
-    - trigger: Hubble이 finding → task 등록 시
+    - trigger: Kepler/Hubble이 discovery → task 등록 시
     - status: PendingProposal
     - actor : Discord !propose-approve / !propose-reject
     - effect: !propose-approve → Pending (정상 큐로 진입)
@@ -590,19 +598,21 @@ GitHub Project가 없는 대신, **v1의 source of truth는 `tasks-{category_id}
 
 ---
 
-## 10. Hubble의 v1 동작 (자율 review loop의 축소판)
+## 10. Kepler / Hubble의 v1 동작 (자율 discovery loop의 축소판)
 
-현재 Hubble은 발견 즉시 task를 Pending으로 등록한다. 이는 v2 §18 원칙 10 위반.
+기존 설계는 Hubble이 코드 finding을 발견 즉시 Pending task로 등록했다. 분리 후에는 Kepler가 코드 finding을, Hubble이 외부 signal을 발견하지만 둘 다 즉시 실행 가능한 작업이 아니라 `PendingProposal` 후보로만 등록한다.
 
 v1 보완:
 
 ```text
 [변경 전]
-clippy 발견 → tasks.json에 status=Pending task 추가 → 즉시 파이프라인 진입
+clippy/external signal 발견 → tasks.json에 status=Pending task 추가 → 즉시 파이프라인 진입
 
 [변경 후]
-clippy 발견
+Kepler: clippy 발견
   → finding 정규화 (severity, category, file:line, suggested_fix)
+Hubble: news/RSS/SNS 등 외부 signal 발견
+  → signal 정규화 (source, title, summary, url)
   → "Discovery Brief" artifact 생성 (.canopus/findings/<id>.md)
   → tasks.json에 status=PendingProposal로 추가
   → Discord #general에 알림 ("새 후보 N개 발견 — !propose-approve <id>")
@@ -619,9 +629,10 @@ clippy 발견
 dedup hash 저장 위치:
 
 ```text
-.canopus/hubble/seen.json
+.canopus/kepler/seen.json   # code finding
+.canopus/hubble/seen.json   # external signal
 {
-  "<finding_hash>": { "first_seen": "...", "last_status": "rejected", "task_id": "..." }
+  "<discovery_hash>": { "first_seen": "...", "task_id": "...", "status": "pending_proposal" }
 }
 ```
 
@@ -635,10 +646,10 @@ v1에서 절대 어기지 말 것:
 
 ```text
 1. Pipeline orchestrator 외부에서 WorkflowState 전이 금지
-2. AgentRuntime 또는 Hubble이 git/gh를 직접 실행 금지 — 반드시 ToolGateway 경유
+2. AgentRuntime 또는 discovery source가 git/gh를 직접 실행 금지 — 반드시 ToolGateway 경유
 3. ToolGateway가 Deny를 반환했는데 Caller가 우회 금지
 4. Discord !approve 없이 git push / gh pr create 금지
-5. Hubble이 PendingProposal 단계 건너뛰고 Pending으로 직접 등록 금지
+5. Kepler/Hubble이 PendingProposal 단계 건너뛰고 Pending으로 직접 등록 금지
 6. Canopus가 main/master/develop 브랜치에 직접 commit 금지
 7. tasks-*.json 외 source of truth 추가 금지 (DB 분기는 v2 작업)
 8. AgentRuntime adapter가 LLM 호출 시 secret을 prompt에 그대로 노출 금지
@@ -670,8 +681,9 @@ v1에서 절대 어기지 말 것:
 | GitHub | Issue 생성/폴링 | ✅ | ✅ +collaborator 검증 | ✅ webhook |
 | GitHub | PR 생성 | ✅ (gh CLI) | ✅ | ✅ octocrab API |
 | GitHub | Project board | 🔴 | 🔴 (의도적 미포함) | ✅ |
-| Hubble | clippy 스캔 | ✅ | ✅ | ✅ +다양한 분석기 |
-| Hubble | 즉시 Pending 등록 | ⚠️ 안티패턴 | 🔴 PendingProposal 변경 | ✅ |
+| Kepler | clippy 스캔 | ✅ | ✅ | ✅ +다양한 분석기 |
+| Hubble | 외부 data collector | 🔴 stub | 🔴 stub 유지 | ✅ +news/RSS/SNS source |
+| Discovery source | 즉시 Pending 등록 | ⚠️ 안티패턴 | 🔴 PendingProposal 변경 | ✅ |
 | Approval | !approve/!reject | ✅ | ✅ +!propose-* | ✅ 7-type |
 | Approval | type 분류 | 🔴 | 🔴 (의도적 미포함) | ✅ |
 | Audit | runs/<task_id>.json | 🔴 | ✅ **v1 신규** | ✅ DB |
@@ -693,7 +705,7 @@ v1에서 절대 어기지 말 것:
    - main/master push 차단
    - secret 경로 차단
 
-3. Hubble 자동 등록 → PendingProposal 변경
+3. Kepler/Hubble 자동 등록 → PendingProposal 변경
    - !propose-approve / !propose-reject 명령 추가
    - dedup hash 저장
    - Discord #general 알림
@@ -787,7 +799,7 @@ projects.json
 다음 조건을 만족할 때 v2 step 1을 시작한다:
 
 ```text
-✅ v1 P0 3개(LLM, Tool policy, Hubble proposal) 완료
+✅ v1 P0 3개(LLM, Tool policy, discovery proposal) 완료
 ✅ 실제 사용자가 v1으로 1주 이상 안정 운영
 ✅ runs/ audit log가 충분히 쌓여 패턴 분석 가능
 ✅ "agent끼리 대화시키고 싶다"는 명시적 요구가 발생
@@ -807,7 +819,7 @@ projects.json
 5. Stage 진행은 Pipeline orchestrator만 한다.
 6. Tool 실행은 모두 ToolGateway를 거친다.
 7. !approve 없이 PR이 만들어지지 않는다.
-8. 자율 발견(Hubble)은 PendingProposal로 등록되고, 사람이 승격한다.
+8. 자율 발견(Kepler/Hubble)은 PendingProposal로 등록되고, 사람이 승격한다.
 9. 모든 stage는 runs/<task_id>.json에 기록된다.
 10. v1의 모든 데이터는 v2로 무손실 마이그레이션 가능해야 한다.
 ```

@@ -54,11 +54,15 @@
 - `!= Processed` 패턴 금지 (PendingProposal/PendingReview/Failed/Dispatched가 모두 잡혀버림).
 - PendingProposal 자동 dispatch의 **1차 방어선** (CAS는 2차).
 
-### 2.4 Hubble proposal & dedup
+### 2.4 Kepler / Hubble discovery proposal & dedup
 
-- Discovery → `TaskMessage { meta.status = PendingProposal }` 로 등록.
+- `dysonsphere::discovery`가 공통 `Discovery` trait, FNV-1a ID, `PendingProposal` 등록, seen ledger, Discord 알림을 제공한다.
+- **Kepler**: 코드베이스 스캐너. `cargo clippy` 기반 finding을 `TaskMessage { meta.status = PendingProposal }` 로 등록한다.
+- **Hubble**: 외부 데이터 collector/scraper. v1 통합 범위에서는 source trait + stub만 유지하고, 첫 RSS/SNS/news source는 별도 PR에서 붙인다.
 - `discovery_id`: **FNV-1a 직접 구현** (`DefaultHasher` 금지 — 프로세스/버전 비결정성).
-- Ledger: `.canopus/hubble/seen.json`
+- Ledger:
+  - Kepler code finding: `.canopus/kepler/seen.json`
+  - Hubble external signal: `.canopus/hubble/seen.json`
   ```json
   {
     "<id>": {
@@ -110,7 +114,7 @@
 | 2. ToolGateway 직접 우회 | `check_policy` + `find_git_subcommand` |
 | 3. Deny 반환 무시 | global flag 정규화 + 단위 테스트 (`policy_rejects_dangerous_git_commands`) |
 | 4. !approve 없는 PR | `watch`가 `Processed`만 pick (기존 로직 유지) |
-| 5. Hubble PendingProposal 우회 | dispatcher 필터 + CAS + `seen.json` |
+| 5. Discovery source PendingProposal 우회 | dispatcher 필터 + CAS + `seen.json` |
 | 6. main/master 직접 commit | refspec RHS 검사 + 현재 브랜치 검사 (implicit push) |
 | 7. 추가 source of truth 금지 | `tasks-{cat}.json` 단일 유지 (`seen.json`은 dedup hint, 큐 아님) |
 | 8. LLM prompt에 secret 노출 | LLMAgentRuntime 도입 시 별도 적용 |
@@ -127,12 +131,12 @@
 [ ] cargo test --workspace
 [ ] python3 -m py_compile apps/discord-bot/bot.py
 
-[ ] e2e: hubble scan → PendingProposal 등록 → ton618 dispatcher가 dispatch하지 않음
+[ ] e2e: kepler scan → PendingProposal 등록 → ton618 dispatcher가 dispatch하지 않음
 [ ] e2e: Dispatched task에 !cancel 적용 후 worker 종료 → status=Failed 유지 (부활 X)
 [ ] e2e: git -C <path> push --force 시도 → Deny + Discord 알림 도착
 [ ] e2e: 보호 브랜치 체크아웃 상태 + 인자 없는 git push → Deny + Discord 알림 도착
 [ ] e2e: stage 중간 실패 → runs/<agenda_id>.json 에 status:"failed" 기록 + chrono RFC3339 timestamp
-[ ] e2e: hubble 재시작 후 동일 clippy 경고 재스캔 → 새 task 등록되지 않음 (FNV stable)
+[ ] e2e: kepler 재시작 후 동일 clippy 경고 재스캔 → 새 task 등록되지 않음 (FNV stable)
 ```
 
 ---

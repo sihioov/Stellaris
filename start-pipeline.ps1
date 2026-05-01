@@ -48,7 +48,14 @@ Start-Process powershell -ArgumentList @(
     "cd '$REPO_ROOT'; `$env:LANIAKEA_FILE_PATH='$TASKS_JSON'; `$env:LANIAKEA_SOURCE='file'; `$env:CANOPUS_REPO_PATH='$REPO_ROOT'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; `$env:RUST_LOG='info'; cargo run -p laniakea"
 ) -WindowStyle Normal
 
+
 Start-Sleep -Seconds 2
+
+# Kepler (codebase discovery scanner; Hubble is reserved for external collectors)
+Start-Process powershell -ArgumentList @(
+    "-NoExit", "-Command",
+    "cd '$REPO_ROOT'; `$env:TASKS_JSON_PATH='$TASKS_JSON'; `$env:REPO_PATH='$REPO_ROOT'; `$env:RUST_LOG='info'; cargo run -p kepler"
+) -WindowStyle Normal
 
 # Discord Bot
 Start-Process powershell -ArgumentList @(
@@ -57,9 +64,10 @@ Start-Process powershell -ArgumentList @(
 ) -WindowStyle Normal
 
 Write-Host ""
-Write-Host "✅ 3개 프로세스 시작됨:" -ForegroundColor Green
+Write-Host "✅ 4개 프로세스 시작됨:" -ForegroundColor Green
 Write-Host "   🔵 TON618      — 태스크 스케줄러 (10초 폴링)"
 Write-Host "   🟠 Laniakea    — AI 워커 (Canopus 실행)"
+Write-Host "   🟣 Kepler      — 코드베이스 스캐너 (PendingProposal 등록)"
 Write-Host "   🟡 Discord Bot — !run / !approve [id] / !reject [id]"
 Write-Host ""
 Write-Host "Discord에서 !run <요청> 으로 파이프라인을 시작하세요." -ForegroundColor Cyan

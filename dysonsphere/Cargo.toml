@@ -13,3 +13,5 @@ lapin = { version = "2.3.0", default-features = false, features = [] }
 futures-util = "0.3.31"
 fs2 = "0.4"
 
+log = "0.4"
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
