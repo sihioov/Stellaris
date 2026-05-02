@@ -37,9 +37,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_custom_returns_ok() {
+    async fn dispatch_unsupported_custom_returns_error() {
         let task = make_task(TaskType::Custom("foo".to_string()));
-        assert!(dispatch(&task).await.is_ok());
+        let err = dispatch(&task).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported custom task label `foo`"));
     }
 
     #[tokio::test]

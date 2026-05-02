@@ -1,4 +1,8 @@
 # Stellaris AI Pipeline Launcher
+[CmdletBinding()]
+param(
+    [switch]$DryRun
+)
 
 $REPO_ROOT = $PSScriptRoot
 
@@ -12,15 +16,28 @@ if (Test-Path $rootEnv) {
     }
 }
 
+# Shared file-backed queue: TON618 reads TASKS_JSON_PATH; Laniakea reads the same path via LANIAKEA_FILE_PATH.
 $TASKS_JSON  = Join-Path $REPO_ROOT "tasks.json"
 $BOT_ENV     = Join-Path $REPO_ROOT "apps\discord-bot\.env"
 
 # 검증
-if (-not $env:DISCORD_WEBHOOK_URL) {
+if (-not $DryRun -and -not $env:DISCORD_WEBHOOK_URL) {
     Write-Host "❌ .env에 DISCORD_WEBHOOK_URL이 없습니다." -ForegroundColor Red; exit 1
 }
-if (-not (Test-Path $BOT_ENV) -or -not (Select-String -Path $BOT_ENV -Pattern "DISCORD_BOT_TOKEN=.+")) {
+if (-not $DryRun -and (-not (Test-Path $BOT_ENV) -or -not (Select-String -Path $BOT_ENV -Pattern "DISCORD_BOT_TOKEN=.+"))) {
     Write-Host "❌ apps/discord-bot/.env에 DISCORD_BOT_TOKEN이 없습니다." -ForegroundColor Red; exit 1
+}
+
+if ($DryRun) {
+    Write-Host "🧪 Dry-run: validating pipeline wiring without credentials, builds, or live processes." -ForegroundColor Cyan
+    Write-Host "TASKS_JSON_PATH=$TASKS_JSON (TON618)"
+    Write-Host "LANIAKEA_FILE_PATH=$TASKS_JSON (same file-backed queue)"
+    Write-Host "TON618: cargo run -p ton618"
+    Write-Host "LANIAKEA: LANIAKEA_SOURCE=file LANIAKEA_FILE_PATH=$TASKS_JSON CANOPUS_REPO_PATH=$REPO_ROOT CANOPUS_STATE_PATH=$REPO_ROOT\.canopus cargo run -p laniakea"
+    Write-Host "KEPLER: REPO_PATH=$REPO_ROOT cargo run -p kepler"
+    Write-Host "DISCORD BOT: python bot.py (requires DISCORD_BOT_TOKEN only outside -DryRun)"
+    Write-Host "Live gaps: real Discord, GitHub push/PR/merge/deploy, and credentialed services are not exercised by -DryRun."
+    exit 0
 }
 
 # Canopus release 바이너리 빌드 (Laniakea가 PATH에서 찾음)
@@ -45,7 +62,7 @@ Start-Sleep -Seconds 2
 # DISCORD_WEBHOOK_URL은 부모 프로세스 환경에서 상속되므로 커맨드 문자열에 포함하지 않음
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
-    "cd '$REPO_ROOT'; `$env:LANIAKEA_FILE_PATH='$TASKS_JSON'; `$env:LANIAKEA_SOURCE='file'; `$env:CANOPUS_REPO_PATH='$REPO_ROOT'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; `$env:RUST_LOG='info'; cargo run -p laniakea"
+    "cd '$REPO_ROOT'; `$env:LANIAKEA_FILE_PATH='$TASKS_JSON'; `$env:LANIAKEA_SOURCE='file'; `$env:CANOPUS_REPO_PATH='$REPO_ROOT'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; `$env:CANOPUS_ENABLE_GITHUB='0'; `$env:RUST_LOG='info'; cargo run -p laniakea"
 ) -WindowStyle Normal
 
 
@@ -60,7 +77,7 @@ Start-Process powershell -ArgumentList @(
 # Discord Bot
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
-    "cd '$REPO_ROOT\apps\discord-bot'; pip install -r requirements.txt -q; python bot.py"
+    "cd '$REPO_ROOT\apps\discord-bot'; `$env:TASKS_JSON_PATH='$TASKS_JSON'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; pip install -r requirements.txt -q; python bot.py"
 ) -WindowStyle Normal
 
 Write-Host ""

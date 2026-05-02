@@ -36,7 +36,7 @@ async fn file_mode_processes_dispatched_tasks_to_pending_review() {
     let file = tempfile::NamedTempFile::new().unwrap();
     let tasks = vec![
         make_dispatched_task("T1", TaskType::NewsA),
-        make_dispatched_task("T2", TaskType::Custom("foo".to_string())),
+        make_dispatched_task("T2", TaskType::NewsA),
     ];
     let json = serde_json::to_string(&tasks).unwrap();
     std::fs::write(file.path(), &json).unwrap();

@@ -1,20 +1,173 @@
 use dysonsphere::{
     error::{Result, StellarisError},
-    message::TaskMessage,
+    message::{TaskMessage, TaskType},
 };
 use std::time::Duration;
 use tokio::process::Command;
 
-pub async fn handle(task: &TaskMessage, label: &str) -> Result<()> {
-    if label == "canopus.agent" {
-        run_canopus(task).await
-    } else {
-        log::info!("[Custom:{}] task_id={}", label, task.task_id);
-        Ok(())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CanopusRoleMode {
+    Agent,
+    Planner,
+    Reviewer,
+}
+
+impl CanopusRoleMode {
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "canopus.agent" => Some(Self::Agent),
+            "canopus.planner" => Some(Self::Planner),
+            "canopus.reviewer" => Some(Self::Reviewer),
+            _ => None,
+        }
+    }
+
+    fn as_arg(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Planner => "planner",
+            Self::Reviewer => "reviewer",
+        }
     }
 }
 
-async fn run_canopus(task: &TaskMessage) -> Result<()> {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct CanopusMetadata {
+    request: String,
+    agenda_id: Option<String>,
+    github_issue_url: Option<String>,
+    github_issue_number: Option<String>,
+}
+
+pub async fn handle(task: &TaskMessage, label: &str) -> Result<()> {
+    let Some(role_mode) = CanopusRoleMode::from_label(label) else {
+        return Err(StellarisError::IoError(format!(
+            "unsupported custom task label `{label}` for task {}",
+            task.task_id
+        )));
+    };
+
+    run_canopus(task, role_mode).await
+}
+
+fn canopus_submit_args(
+    task: &TaskMessage,
+    repo: &str,
+    state: &str,
+    role_mode: CanopusRoleMode,
+) -> Vec<String> {
+    let metadata = parse_canopus_metadata(&task.payload);
+    let agenda_id = metadata
+        .agenda_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&task.task_id);
+    let request = if metadata.request.trim().is_empty() {
+        task.payload.as_str()
+    } else {
+        metadata.request.as_str()
+    };
+
+    let mut args = vec![
+        "submit".to_string(),
+        "--repo".to_string(),
+        repo.to_string(),
+        "--state".to_string(),
+        state.to_string(),
+        "--agenda-id".to_string(),
+        agenda_id.to_string(),
+        "--task-id".to_string(),
+        task.task_id.clone(),
+        "--task-type".to_string(),
+        task_type_arg(&task.task_type),
+        "--role-mode".to_string(),
+        role_mode.as_arg().to_string(),
+        "--task-status".to_string(),
+        format!("{:?}", task.meta.status),
+        "--task-created-at".to_string(),
+        task.meta.created_at.to_rfc3339(),
+        "--task-updated-at".to_string(),
+        task.meta.updated_at.to_rfc3339(),
+    ];
+
+    if let Some(url) = metadata
+        .github_issue_url
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.extend(["--github-issue-url".to_string(), url]);
+    }
+    if let Some(number) = metadata
+        .github_issue_number
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.extend(["--github-issue-number".to_string(), number]);
+    }
+
+    args.push(request.to_string());
+    args
+}
+
+fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+        if let Some(object) = value.as_object() {
+            let get = |key: &str| {
+                object.get(key).and_then(|value| match value {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+            };
+
+            return CanopusMetadata {
+                request: get("request")
+                    .or_else(|| get("prompt"))
+                    .or_else(|| get("title"))
+                    .unwrap_or_else(|| payload.to_string()),
+                agenda_id: get("agenda_id"),
+                github_issue_url: get("github_issue_url"),
+                github_issue_number: get("github_issue_number")
+                    .or_else(|| get("github_issue"))
+                    .or_else(|| get("issue_number")),
+            };
+        }
+    }
+
+    let mut metadata = CanopusMetadata {
+        request: payload.to_string(),
+        ..CanopusMetadata::default()
+    };
+
+    for line in payload.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().to_string();
+        match key.trim() {
+            "prompt" | "request" => metadata.request = value,
+            "agenda_id" => metadata.agenda_id = Some(value),
+            "github_issue_url" => metadata.github_issue_url = Some(value),
+            "github_issue_number" | "github_issue" | "issue_number" => {
+                metadata.github_issue_number = Some(value)
+            }
+            _ => {}
+        }
+    }
+
+    metadata
+}
+
+fn task_type_arg(task_type: &TaskType) -> String {
+    match task_type {
+        TaskType::NewsA => "news-a".to_string(),
+        TaskType::Custom(label) => format!("custom:{label}"),
+        TaskType::Bug => "bug".to_string(),
+        TaskType::Security => "security".to_string(),
+        TaskType::TestCoverage => "test-coverage".to_string(),
+        TaskType::UXImprovement => "ux-improvement".to_string(),
+    }
+}
+
+async fn run_canopus(task: &TaskMessage, role_mode: CanopusRoleMode) -> Result<()> {
     let repo = std::env::var("CANOPUS_REPO_PATH").unwrap_or_else(|_| ".".into());
     let state = std::env::var("CANOPUS_STATE_PATH").unwrap_or_else(|_| ".canopus".into());
     let timeout_secs = std::env::var("CANOPUS_TIMEOUT_SECS")
@@ -24,14 +177,14 @@ async fn run_canopus(task: &TaskMessage) -> Result<()> {
 
     notify_discord(&format!("🚀 **작업 시작**: {}", task.payload));
     log::info!(
-        "[Canopus] Starting for task {}: {}",
+        "[Canopus] Starting for task {} ({:?}): {}",
         task.task_id,
+        role_mode,
         task.payload
     );
 
-    let cmd_future = Command::new("canopus")
-        .args(["submit", "--repo", &repo, "--state", &state, &task.payload])
-        .output();
+    let args = canopus_submit_args(task, &repo, &state, role_mode);
+    let cmd_future = Command::new("canopus").args(args).output();
 
     let output = match tokio::time::timeout(Duration::from_secs(timeout_secs), cmd_future).await {
         Err(_) => {
@@ -91,5 +244,127 @@ fn notify_discord(message: &str) {
                 log::warn!("[Canopus] Discord notify failed: {e}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dysonsphere::message::{TaskMessage, TaskMeta, TaskType};
+
+    fn task(task_type: TaskType, payload: &str) -> TaskMessage {
+        TaskMessage {
+            task_id: "UPSTREAM-42".to_string(),
+            task_type,
+            payload: payload.to_string(),
+            meta: TaskMeta::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_custom_label_fails_loudly() {
+        let err = handle(
+            &task(TaskType::Custom("foo".to_string()), "fix routing"),
+            "foo",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("unsupported custom task label `foo`"));
+    }
+
+    #[test]
+    fn canopus_submit_args_include_upstream_metadata_and_role_mode() {
+        let payload = serde_json::json!({
+            "request": "fix routed bug",
+            "agenda_id": "AGENDA-7",
+            "github_issue_url": "https://github.example/owner/repo/issues/7",
+            "github_issue_number": 7
+        })
+        .to_string();
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(args[0], "submit");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--agenda-id", "AGENDA-7"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--task-id", "UPSTREAM-42"]));
+        assert!(args.windows(2).any(|pair| pair == ["--task-type", "bug"]));
+        assert!(args.windows(2).any(|pair| pair == ["--role-mode", "agent"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--task-status", "Pending"]));
+        assert!(args.windows(2).any(|pair| pair[0] == "--task-created-at"));
+        assert!(args.windows(2).any(|pair| pair[0] == "--task-updated-at"));
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "--github-issue-url",
+                "https://github.example/owner/repo/issues/7"
+            ]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-issue-number", "7"]));
+        assert_eq!(args.last().unwrap(), "fix routed bug");
+    }
+
+    #[test]
+    fn planner_and_reviewer_labels_select_intentional_role_modes() {
+        let planner = canopus_submit_args(
+            &task(
+                TaskType::Custom("canopus.planner".to_string()),
+                "prompt=make a plan",
+            ),
+            "/repo",
+            "/state",
+            CanopusRoleMode::Planner,
+        );
+        let reviewer = canopus_submit_args(
+            &task(
+                TaskType::Custom("canopus.reviewer".to_string()),
+                "prompt=review this",
+            ),
+            "/repo",
+            "/state",
+            CanopusRoleMode::Reviewer,
+        );
+
+        assert!(planner
+            .windows(2)
+            .any(|pair| pair == ["--task-type", "custom:canopus.planner"]));
+        assert!(planner
+            .windows(2)
+            .any(|pair| pair == ["--role-mode", "planner"]));
+        assert_eq!(planner.last().unwrap(), "make a plan");
+        assert!(reviewer
+            .windows(2)
+            .any(|pair| pair == ["--task-type", "custom:canopus.reviewer"]));
+        assert!(reviewer
+            .windows(2)
+            .any(|pair| pair == ["--role-mode", "reviewer"]));
+        assert_eq!(reviewer.last().unwrap(), "review this");
+    }
+
+    #[test]
+    fn plain_payload_uses_task_id_as_agenda_fallback() {
+        let args = canopus_submit_args(
+            &task(TaskType::Security, "audit auth"),
+            "/repo",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--agenda-id", "UPSTREAM-42"]));
+        assert_eq!(args.last().unwrap(), "audit auth");
     }
 }
