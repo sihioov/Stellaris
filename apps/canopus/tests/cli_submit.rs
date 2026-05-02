@@ -49,6 +49,8 @@ async fn submit_creates_branch_patch_backend_task_and_artifacts() {
         repo.display().to_string(),
         "--state".to_string(),
         state.display().to_string(),
+        "--agenda-id".to_string(),
+        "CANOPUS-1".to_string(),
         "add test coverage".to_string(),
     ])
     .await
@@ -57,31 +59,31 @@ async fn submit_creates_branch_patch_backend_task_and_artifacts() {
     assert!(repo.join("canopus-mock-output.txt").exists());
     assert!(state
         .join("artifacts")
-        .join("TASK-1-plan")
+        .join("canopus-1-TASK-1-plan")
         .join("plan.md")
         .exists());
     assert!(state
         .join("artifacts")
-        .join("TASK-2-code")
+        .join("canopus-1-TASK-2-code")
         .join("runtime-log.md")
         .exists());
     assert!(state
         .join("artifacts")
-        .join("TASK-2-code")
+        .join("canopus-1-TASK-2-code")
         .join("diff.md")
         .exists());
     assert!(state
         .join("artifacts")
-        .join("TASK-2-code")
+        .join("canopus-1-TASK-2-code")
         .join("test-result.md")
         .exists());
     assert!(state
         .join("artifacts")
-        .join("TASK-3-review")
+        .join("canopus-1-TASK-3-review")
         .join("review.md")
         .exists());
     assert!(state.join("tasks.json").exists());
-    let run_record_path = state.join("runs").join("CANOPUS-1.json");
+    let run_record_path = state.join("runs").join("canopus-1.json");
     assert!(run_record_path.exists());
     let run_records: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
@@ -107,7 +109,7 @@ async fn submit_creates_branch_patch_backend_task_and_artifacts() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&branch.stdout).trim(),
-        "canopus/CANOPUS-1"
+        "canopus/canopus-1"
     );
 
     let _ = fs::remove_dir_all(repo);
@@ -126,13 +128,15 @@ async fn submit_records_failed_prepare_stage() {
         repo.display().to_string(),
         "--state".to_string(),
         state.display().to_string(),
+        "--agenda-id".to_string(),
+        "CANOPUS-1".to_string(),
         "add test coverage".to_string(),
     ])
     .await
     .unwrap_err();
 
     assert!(err.to_string().contains("worktree is not clean"));
-    let run_record_path = state.join("runs").join("CANOPUS-1.json");
+    let run_record_path = state.join("runs").join("canopus-1.json");
     let run_records: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
     let records = run_records.as_array().unwrap();
@@ -149,6 +153,77 @@ async fn submit_records_failed_prepare_stage() {
         "failed stage timestamp must be RFC3339"
     );
     chrono::DateTime::parse_from_rfc3339(started_at).unwrap();
+
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
+async fn submit_routes_roles_from_upstream_task_type_and_id() {
+    let repo = git_repo("cli-submit-bug-pipeline");
+    let state = repo.join(".canopus");
+
+    cli::run(vec![
+        "canopus".to_string(),
+        "submit".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+        "--state".to_string(),
+        state.display().to_string(),
+        "--agenda-id".to_string(),
+        "UPSTREAM-BUG-1".to_string(),
+        "--task-type".to_string(),
+        "bug".to_string(),
+        "fix routed bug".to_string(),
+    ])
+    .await
+    .unwrap();
+
+    let tasks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(state.join("tasks.json")).unwrap()).unwrap();
+    let payloads = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["payload"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("agenda_id=upstream-bug-1")));
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("role=analyzer")));
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("role=coder")));
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("role=tester")));
+
+    let run_record_path = state.join("runs").join("upstream-bug-1.json");
+    let run_records: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
+    let stage_names = run_records
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(stage_names.contains(&"analyzer".to_string()));
+    assert!(stage_names.contains(&"code".to_string()));
+    assert!(stage_names.contains(&"tester".to_string()));
+    assert!(stage_names.contains(&"check".to_string()));
+    assert!(stage_names.contains(&"complete".to_string()));
+
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&branch.stdout).trim(),
+        "canopus/upstream-bug-1"
+    );
 
     let _ = fs::remove_dir_all(repo);
 }

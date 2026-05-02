@@ -50,25 +50,86 @@ pub struct AgentTask {
     pub agenda_id: String,
     pub role: AgentRole,
     pub prompt: String,
+    pub role_mode: String,
+    pub source_task_id: Option<String>,
+    pub github_issue: Option<GitHubIssueMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubIssueMetadata {
+    pub owner: Option<String>,
+    pub repo: Option<String>,
+    pub number: Option<u64>,
+    pub url: Option<String>,
 }
 
 impl AgentTask {
     pub fn for_agenda(id: impl Into<String>, agenda: &Agenda, role: AgentRole) -> Self {
+        Self::for_agenda_with_metadata(id, agenda, role, "standard", None, None)
+    }
+
+    pub fn for_agenda_with_metadata(
+        id: impl Into<String>,
+        agenda: &Agenda,
+        role: AgentRole,
+        role_mode: impl Into<String>,
+        source_task_id: Option<String>,
+        github_issue: Option<GitHubIssueMetadata>,
+    ) -> Self {
+        let role_mode = role_mode.into();
+        let mut prompt = format!("Agenda {}: {}", agenda.id, agenda.request);
+        if let Some(task_id) = &source_task_id {
+            prompt.push_str(&format!("\nSource task: {task_id}"));
+        }
+        if !role_mode.trim().is_empty() {
+            prompt.push_str(&format!("\nRole mode: {role_mode}"));
+        }
+        if let Some(issue) = &github_issue {
+            if let Some(number) = issue.number {
+                prompt.push_str(&format!("\nGitHub issue: #{number}"));
+            }
+            if let Some(url) = &issue.url {
+                prompt.push_str(&format!("\nGitHub issue URL: {url}"));
+            }
+        }
+
         Self {
             id: id.into(),
             agenda_id: agenda.id.clone(),
             role,
-            prompt: format!("Agenda {}: {}", agenda.id, agenda.request),
+            prompt,
+            role_mode,
+            source_task_id,
+            github_issue,
         }
     }
 
     pub fn to_backend_payload(&self) -> String {
-        format!(
-            "agenda_id={}\nrole={}\nprompt={}\n",
+        let mut payload = format!(
+            "agenda_id={}\nrole={}\nrole_mode={}\nprompt={}\n",
             self.agenda_id,
             self.role.as_str(),
+            self.role_mode,
             self.prompt
-        )
+        );
+        if let Some(task_id) = &self.source_task_id {
+            payload.push_str(&format!("task_id={task_id}\n"));
+        }
+        if let Some(issue) = &self.github_issue {
+            if let Some(owner) = &issue.owner {
+                payload.push_str(&format!("github_owner={owner}\n"));
+            }
+            if let Some(repo) = &issue.repo {
+                payload.push_str(&format!("github_repo={repo}\n"));
+            }
+            if let Some(number) = issue.number {
+                payload.push_str(&format!("github_issue_number={number}\n"));
+            }
+            if let Some(url) = &issue.url {
+                payload.push_str(&format!("github_issue_url={url}\n"));
+            }
+        }
+        payload
     }
 }
 

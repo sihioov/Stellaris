@@ -24,6 +24,17 @@ impl LocalToolGateway {
             return Err(err);
         }
 
+        if is_external_mutation(command) && !live_mutations_enabled() {
+            return Ok(CommandOutput {
+                status: 0,
+                stdout: format!(
+                    "dry-run: skipped external mutation `{}` (set CANOPUS_ENABLE_LIVE_MUTATIONS=1 to execute)\n",
+                    command.join(" ")
+                ),
+                stderr: String::new(),
+            });
+        }
+
         let output = Command::new(command[0])
             .args(&command[1..])
             .current_dir(repo)
@@ -34,6 +45,20 @@ impl LocalToolGateway {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
+    }
+}
+
+fn live_mutations_enabled() -> bool {
+    std::env::var("CANOPUS_ENABLE_LIVE_MUTATIONS").as_deref() == Ok("1")
+}
+
+fn is_external_mutation(command: &[&str]) -> bool {
+    match command.first().copied() {
+        Some("gh") => true,
+        Some("git") => find_git_subcommand(command)
+            .map(|(_, subcommand)| subcommand == "push")
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -334,5 +359,28 @@ mod tests {
                 "{command:?} should be allowed"
             );
         }
+    }
+
+    #[test]
+    fn dry_runs_external_mutations_by_default() {
+        std::env::remove_var("CANOPUS_ENABLE_LIVE_MUTATIONS");
+        let repo = std::env::temp_dir().join(format!("canopus-dry-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let gateway = LocalToolGateway;
+
+        let push = gateway
+            .run_check(&repo, &["git", "push", "-u", "origin", "feature/test"])
+            .unwrap();
+        assert_eq!(push.status, 0);
+        assert!(push.stdout.contains("dry-run: skipped external mutation"));
+
+        let pr = gateway
+            .run_check(&repo, &["gh", "pr", "create", "--title", "t"])
+            .unwrap();
+        assert_eq!(pr.status, 0);
+        assert!(pr.stdout.contains("CANOPUS_ENABLE_LIVE_MUTATIONS=1"));
+
+        let _ = std::fs::remove_dir_all(repo);
     }
 }
