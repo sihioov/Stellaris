@@ -31,6 +31,7 @@ import shlex
 import tempfile
 import uuid
 from contextlib import contextmanager
+from urllib.parse import quote
 
 try:
     import fcntl
@@ -50,8 +51,13 @@ PROJECTS_JSON_PATH = os.environ.get(
     os.path.join(os.path.dirname(__file__), "projects.json"),
 )
 TASKS_DIR = os.environ.get("TASKS_DIR", os.path.dirname(__file__))
+TASKS_JSON_PATH = os.environ.get("TASKS_JSON_PATH", "").strip()
 CANOPUS_STATE_PATH = os.environ.get("CANOPUS_STATE_PATH")
 ASK_COMMAND = os.environ.get("ASK_COMMAND", "").strip()
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "").strip()
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()
+GITHUB_PROJECT_ID = os.environ.get("GITHUB_PROJECT_ID", "").strip()
+GITHUB_PROJECT_URL = os.environ.get("GITHUB_PROJECT_URL", "").strip()
 
 
 def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -126,7 +132,64 @@ def get_project(category_id: int) -> dict | None:
 
 
 def get_tasks_path(category_id: int) -> str:
+    if TASKS_JSON_PATH:
+        return os.path.abspath(os.path.expanduser(TASKS_JSON_PATH))
     return os.path.join(TASKS_DIR, f"tasks-{category_id}.json")
+
+
+def github_repo_slug() -> str | None:
+    if GITHUB_OWNER and GITHUB_REPO:
+        return f"{GITHUB_OWNER}/{GITHUB_REPO}"
+    return None
+
+
+def github_issue_create_url(title: str) -> str | None:
+    slug = github_repo_slug()
+    if not slug:
+        return None
+    return f"https://github.com/{slug}/issues/new?title={quote(title)}"
+
+
+def build_discord_message_link(ctx) -> str | None:
+    if not getattr(ctx, "guild", None):
+        return None
+    return f"https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{ctx.message.id}"
+
+
+def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str) -> dict:
+    agenda_id = f"agenda-{task_id}"
+    title = truncate_text(request.replace("\n", " "), 90)
+    payload = {
+        "request": request,
+        "repo_path": project["repo_path"],
+        "task_id": task_id,
+        "agenda_id": agenda_id,
+        "canopus_agenda_id": agenda_id,
+        "role_mode": {
+            "canopus.planner": "plan",
+            "canopus.agent": "full",
+            "canopus.reviewer": "review",
+        }.get(channel_type, "full"),
+        "github_owner": GITHUB_OWNER or None,
+        "github_repo": GITHUB_REPO or None,
+        "github_repo_slug": github_repo_slug(),
+        "github_issue_number": None,
+        "github_issue_url": None,
+        "github_issue_create_url": github_issue_create_url(title),
+        "github_project_id": GITHUB_PROJECT_ID or None,
+        "github_project_url": GITHUB_PROJECT_URL or None,
+        "github_project_item_id": None,
+        "github_project_status": "Pending",
+        "discord_channel_id": str(ctx.channel.id),
+        "discord_message_id": str(ctx.message.id),
+        "discord_message_url": build_discord_message_link(ctx),
+        "confirmation_state": "requested",
+        "approval_state": "pending",
+        "approved_at": None,
+        "rejected_at": None,
+        "finalize_requested_at": None,
+    }
+    return {k: v for k, v in payload.items() if v is not None}
 
 
 def get_channel_type(channel_name: str) -> str | None:
@@ -201,6 +264,7 @@ def update_task_status_locked(
     statuses: set[str],
     label: str,
     next_status: str,
+    mutate=None,
 ) -> tuple[dict | None, str | None]:
     with task_file_lock(path, exclusive=True):
         tasks = _read_tasks_unlocked(path)
@@ -222,6 +286,8 @@ def update_task_status_locked(
 
         target.setdefault("meta", {})["status"] = next_status
         target["meta"]["updated_at"] = now_iso()
+        if mutate is not None:
+            mutate(target)
         snapshot = json.loads(json.dumps(target))
         _write_tasks_unlocked(tasks, path)
         return snapshot, None
@@ -560,14 +626,18 @@ async def cmd_run(ctx, *, request: str = None):
 
     task_id = f"discord-{uuid.uuid4().hex[:12]}"
     ts = now_iso()
+    payload = build_task_payload(ctx, task_id, request, project, channel_type)
     task = {
         "task_id": task_id,
         "task_type": {"Custom": channel_type},
-        "payload": json.dumps({"request": request, "repo_path": project["repo_path"]}, ensure_ascii=False),
+        "payload": json.dumps(payload, ensure_ascii=False),
         "meta": {
             "status": "Pending",
             "created_at": ts,
             "updated_at": ts,
+            "agenda_id": payload["agenda_id"],
+            "confirmation_state": payload["confirmation_state"],
+            "approval_state": payload["approval_state"],
         },
     }
     append_task_locked(tasks_path, task)
@@ -579,8 +649,39 @@ async def cmd_run(ctx, *, request: str = None):
         f"**프로젝트**: {project['name']}\n"
         f"**타입**: {type_label}\n"
         f"**요청**: {request}\n"
+        f"**Agenda**: `{payload['agenda_id']}`\n"
+        f"**GitHub Issue**: {payload.get('github_issue_url') or payload.get('github_issue_create_url') or '(not configured)'}\n"
+        f"**Project**: {payload.get('github_project_url') or payload.get('github_project_id') or '(not configured)'}\n"
         f"**Status**: Pending"
     )
+
+
+def mark_task_approved(task: dict) -> None:
+    ts = now_iso()
+    payload = _payload_data(task)
+    payload["confirmation_state"] = "approved"
+    payload["approval_state"] = "approved"
+    payload["approved_at"] = ts
+    payload["finalize_requested_at"] = ts
+    payload["github_project_status"] = "Approved"
+    task["payload"] = json.dumps(payload, ensure_ascii=False)
+    task.setdefault("meta", {})["confirmation_state"] = "approved"
+    task["meta"]["approval_state"] = "approved"
+    task["meta"]["approved_at"] = ts
+    task["meta"]["finalize_requested_at"] = ts
+
+
+def mark_task_rejected(task: dict) -> None:
+    ts = now_iso()
+    payload = _payload_data(task)
+    payload["confirmation_state"] = "rejected"
+    payload["approval_state"] = "rejected"
+    payload["rejected_at"] = ts
+    payload["github_project_status"] = "Rejected"
+    task["payload"] = json.dumps(payload, ensure_ascii=False)
+    task.setdefault("meta", {})["confirmation_state"] = "rejected"
+    task["meta"]["approval_state"] = "rejected"
+    task["meta"]["rejected_at"] = ts
 
 
 @bot.command(name="approve")
@@ -596,13 +697,20 @@ async def cmd_approve(ctx, task_id: str = None):
         return
 
     target, error = update_task_status_locked(
-        tasks_path, task_id, "approve", {"PendingReview"}, "PendingReview", "Processed"
+        tasks_path, task_id, "approve", {"PendingReview"}, "PendingReview", "Processed", mark_task_approved
     )
     if error:
         await ctx.send(error)
         return
 
-    await ctx.send(f"✅ 태스크 승인됨\n**ID**: `{target['task_id']}`\n**Status**: Processed")
+    payload = _payload_data(target)
+    await ctx.send(
+        f"✅ 태스크 승인됨\n"
+        f"**ID**: `{target['task_id']}`\n"
+        f"**Agenda**: `{payload.get('agenda_id', '?')}`\n"
+        f"**Status**: Processed\n"
+        f"**Finalize**: requested"
+    )
 
 
 @bot.command(name="reject")
@@ -618,13 +726,20 @@ async def cmd_reject(ctx, task_id: str = None):
         return
 
     target, error = update_task_status_locked(
-        tasks_path, task_id, "reject", {"PendingReview"}, "PendingReview", "Failed"
+        tasks_path, task_id, "reject", {"PendingReview"}, "PendingReview", "Failed", mark_task_rejected
     )
     if error:
         await ctx.send(error)
         return
 
-    await ctx.send(f"❌ 태스크 거부됨\n**ID**: `{target['task_id']}`\n**Status**: Failed")
+    payload = _payload_data(target)
+    await ctx.send(
+        f"❌ 태스크 거부됨\n"
+        f"**ID**: `{target['task_id']}`\n"
+        f"**Agenda**: `{payload.get('agenda_id', '?')}`\n"
+        f"**Status**: Failed\n"
+        f"**Finalize**: blocked"
+    )
 
 
 @bot.command(name="propose-approve")
@@ -746,9 +861,14 @@ async def cmd_show(ctx, task_id: str = None):
     task_type = target.get("task_type", "?")
     links = []
     for key in (
+        "agenda_id",
         "github_issue",
         "github_issue_url",
+        "github_issue_create_url",
         "issue_url",
+        "github_project_id",
+        "github_project_url",
+        "github_project_item_id",
         "github_pr",
         "github_pr_url",
         "pr_url",
@@ -797,9 +917,11 @@ async def cmd_status(ctx):
             preview = payload_data.get("request", t.get("payload", ""))
         except (json.JSONDecodeError, TypeError):
             preview = t.get("payload", "")
+        agenda_id = _payload_data(t).get("agenda_id")
+        agenda = f" ({agenda_id})" if agenda_id else ""
         preview = preview[:60] + "…" if len(preview) > 60 else preview
         icon = ICON_MAP.get(status, "❓")
-        lines.append(f"{icon} `{task_id}` [{status}] — {preview}")
+        lines.append(f"{icon} `{task_id}`{agenda} [{status}] — {preview}")
     await ctx.send("\n".join(lines))
 
 
