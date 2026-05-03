@@ -57,6 +57,22 @@ Canopus should keep all externally visible or destructive actions behind explici
 - Project Status field/option IDs are environment-specific. Prefer `GITHUB_PROJECT_STATUS_FIELD_ID` and `GITHUB_PROJECT_STATUS_OPTION_ID`; otherwise Canopus can resolve `GITHUB_PROJECT_STATUS_FIELD_NAME` (default `Status`) and `GITHUB_PROJECT_STATUS_OPTION_NAME`/`github_project_status` in read/live modes.
 - GitHub Actions `GITHUB_TOKEN` is not sufficient for GitHub Projects access; optional live smoke tests require PAT or GitHub App credentials outside CI.
 - `start-pipeline.ps1 -DryRun` validates process wiring without requiring Discord credentials, building binaries, starting long-running services, pushing branches, creating PRs, merging, deploying, or touching live credentials.
+
+### P0 local dry-run operator loop
+
+For local self-hosting smoke runs, prefer a deterministic command runtime and the file-backed watcher/finalizer:
+
+```bash
+CANOPUS_AGENT_RUNTIME=command
+CANOPUS_AGENT_COMMAND='python3 -c "import os; print(\"canopus dry-run stage=\" + os.environ.get(\"CANOPUS_ROLE\", \"unknown\"))"'
+CANOPUS_ENABLE_GITHUB=0
+CANOPUS_ENABLE_LIVE_MUTATIONS=0
+CANOPUS_ALLOW_GITHUB_MUTATION=0
+CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=0
+canopus watch tasks.json
+```
+
+`canopus watch` is the local finalizer runner: after approval marks a task `Processed`, it writes dry-run finalize records under `<repo>/.canopus/runs/<id>-finalize.txt`. The launcher exposes this process in `start-pipeline.ps1 -DryRun` and starts it in the non-`-DryRun` topology with live mutation gates disabled by default.
 - Current live gaps: real Discord delivery, GitHub push/PR/merge/deploy flows, live credential rotation, and production deployment remain outside automated verification.
 
 ## Validation

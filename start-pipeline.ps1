@@ -34,8 +34,10 @@ if ($DryRun) {
     Write-Host "LANIAKEA_FILE_PATH=$TASKS_JSON (same file-backed queue)"
     Write-Host "TON618: cargo run -p ton618"
     Write-Host "LANIAKEA: LANIAKEA_SOURCE=file LANIAKEA_FILE_PATH=$TASKS_JSON CANOPUS_REPO_PATH=$REPO_ROOT CANOPUS_STATE_PATH=$REPO_ROOT\.canopus cargo run -p laniakea"
+    Write-Host "CANOPUS WATCH/FINALIZER: CANOPUS_REPO=$REPO_ROOT CANOPUS_STATE=$REPO_ROOT\.canopus CANOPUS_ENABLE_GITHUB=0 CANOPUS_ENABLE_LIVE_MUTATIONS=0 canopus watch $TASKS_JSON"
     Write-Host "KEPLER: REPO_PATH=$REPO_ROOT cargo run -p kepler"
     Write-Host "DISCORD BOT: python bot.py (requires DISCORD_BOT_TOKEN only outside -DryRun)"
+    Write-Host "Dry-run safety: no GitHub token, Discord token, push, PR creation, GitHub Issue mutation, or GitHub Project mutation is required or reached."
     Write-Host "Live gaps: real Discord, GitHub push/PR/merge/deploy, and credentialed services are not exercised by -DryRun."
     exit 0
 }
@@ -68,6 +70,12 @@ Start-Process powershell -ArgumentList @(
 
 Start-Sleep -Seconds 2
 
+# Canopus watch/finalizer (closes approved Processed tasks with dry-run finalize records)
+Start-Process powershell -ArgumentList @(
+    "-NoExit", "-Command",
+    "cd '$REPO_ROOT'; `$env:TASKS_JSON_PATH='$TASKS_JSON'; `$env:CANOPUS_REPO='$REPO_ROOT'; `$env:CANOPUS_STATE='$REPO_ROOT\.canopus'; `$env:CANOPUS_ENABLE_GITHUB='0'; `$env:CANOPUS_ENABLE_LIVE_MUTATIONS='0'; `$env:CANOPUS_ALLOW_GITHUB_MUTATION='0'; `$env:CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION='0'; canopus watch '$TASKS_JSON'"
+) -WindowStyle Normal
+
 # Kepler (codebase discovery scanner; Hubble is reserved for external collectors)
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
@@ -81,10 +89,11 @@ Start-Process powershell -ArgumentList @(
 ) -WindowStyle Normal
 
 Write-Host ""
-Write-Host "✅ 4개 프로세스 시작됨:" -ForegroundColor Green
-Write-Host "   🔵 TON618      — 태스크 스케줄러 (10초 폴링)"
-Write-Host "   🟠 Laniakea    — AI 워커 (Canopus 실행)"
-Write-Host "   🟣 Kepler      — 코드베이스 스캐너 (PendingProposal 등록)"
-Write-Host "   🟡 Discord Bot — !run / !approve [id] / !reject [id]"
+Write-Host "✅ 5개 프로세스 시작됨:" -ForegroundColor Green
+Write-Host "   🔵 TON618       — 태스크 스케줄러 (10초 폴링)"
+Write-Host "   🟠 Laniakea     — AI 워커 (Canopus 실행)"
+Write-Host "   🟢 Canopus Watch — Processed 태스크 finalize dry-run 기록"
+Write-Host "   🟣 Kepler       — 코드베이스 스캐너 (PendingProposal 등록)"
+Write-Host "   🟡 Discord Bot  — !run / !approve [id] / !reject [id]"
 Write-Host ""
 Write-Host "Discord에서 !run <요청> 으로 파이프라인을 시작하세요." -ForegroundColor Cyan

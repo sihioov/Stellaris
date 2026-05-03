@@ -229,6 +229,80 @@ async fn submit_routes_roles_from_upstream_task_type_and_id() {
 }
 
 #[tokio::test]
+async fn submit_accepts_and_stores_upstream_task_provenance() {
+    let repo = git_repo("cli-submit-upstream-provenance");
+    let state = repo.join(".canopus");
+
+    cli::run(vec![
+        "canopus".to_string(),
+        "submit".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+        "--state".to_string(),
+        state.display().to_string(),
+        "--agenda-id".to_string(),
+        "UPSTREAM-META-1".to_string(),
+        "--task-id".to_string(),
+        "discord-task-42".to_string(),
+        "--task-status".to_string(),
+        "PendingReview".to_string(),
+        "--task-created-at".to_string(),
+        "2026-05-03T01:02:03Z".to_string(),
+        "--task-updated-at".to_string(),
+        "2026-05-03T04:05:06Z".to_string(),
+        "preserve upstream provenance".to_string(),
+    ])
+    .await
+    .unwrap();
+
+    let provenance = fs::read_to_string(
+        state
+            .join("artifacts")
+            .join("upstream-meta-1-discord-task-42-upstream-provenance")
+            .join("runtime-log.md"),
+    )
+    .unwrap();
+    assert!(provenance.contains("source_task_id: discord-task-42"));
+    assert!(provenance.contains("task_status: PendingReview"));
+    assert!(provenance.contains("task_created_at: 2026-05-03T01:02:03Z"));
+    assert!(provenance.contains("task_updated_at: 2026-05-03T04:05:06Z"));
+
+    let tasks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(state.join("tasks.json")).unwrap()).unwrap();
+    let payloads = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["payload"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("task_id=discord-task-42")));
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("Upstream task status: PendingReview")));
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("Upstream task created_at: 2026-05-03T01:02:03Z")));
+    assert!(payloads
+        .iter()
+        .any(|payload| payload.contains("Upstream task updated_at: 2026-05-03T04:05:06Z")));
+
+    let run_record_path = state
+        .join("runs")
+        .join("upstream-meta-1-discord-task-42.json");
+    let run_records: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
+    assert!(run_records
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["name"] == "upstream-provenance" && record["status"] == "ok"));
+
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
 async fn submit_issue_only_flow_ignores_project_mode_without_project_identity() {
     let repo = git_repo("cli-submit-issue-only-project-mode");
     let state = repo.join(".canopus");

@@ -171,10 +171,10 @@ async fn file_mode_preserves_concurrent_status_change_after_canopus_success() {
     env::set_var("CANOPUS_TIMEOUT_SECS", "2");
 
     let file = tempfile::NamedTempFile::new().unwrap();
-    let tasks = vec![make_dispatched_task(
-        "C1",
-        TaskType::Custom("canopus.agent".to_string()),
-    )];
+    let task = make_dispatched_task("C1", TaskType::Custom("canopus.agent".to_string()));
+    let created_at = task.meta.created_at.to_rfc3339();
+    let updated_at = task.meta.updated_at.to_rfc3339();
+    let tasks = vec![task];
     fs::write(file.path(), serde_json::to_string(&tasks).unwrap()).unwrap();
     let table = Arc::new(FileTaskTable::new(file.path().to_path_buf()));
 
@@ -199,6 +199,8 @@ async fn file_mode_preserves_concurrent_status_change_after_canopus_success() {
 
     let args = fs::read_to_string(args_file).unwrap();
     assert!(args.contains("--task-status\nDispatched"));
+    assert!(args.contains(&format!("--task-created-at\n{created_at}")));
+    assert!(args.contains(&format!("--task-updated-at\n{updated_at}")));
     assert!(args.contains("--task-type\ncustom:canopus.agent"));
 }
 

@@ -75,6 +75,13 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
     );
     stage_records.push(stage.finish("ok", vec![]));
     persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
+    persist_upstream_provenance(
+        &artifact_store,
+        &parsed.state,
+        &agenda.id,
+        &parsed,
+        &mut stage_records,
+    )?;
 
     let pipeline = parsed
         .task_type
@@ -495,36 +502,58 @@ fn maybe_create_qa_issue(agenda: &Agenda, artifacts: &[Artifact]) -> Option<u64>
 async fn watch(args: &[String]) -> CanopusResult<()> {
     use dysonsphere::db::{FileTaskTable, TaskTable};
 
-    let tasks_path = args.first().map(String::as_str).unwrap_or("tasks.json");
-    let repo = std::env::var("CANOPUS_REPO").unwrap_or_else(|_| ".".to_string());
-    let repo = std::path::Path::new(&repo);
-    let table = FileTaskTable::new(std::path::PathBuf::from(tasks_path));
+    let parsed = WatchArgs::parse(args)?;
+    let table = FileTaskTable::new(parsed.tasks_path.clone());
     let tools = LocalToolGateway;
     let interval = std::time::Duration::from_secs(10);
 
-    log::info!("[watch] Processed 태스크 폴링 시작 ({})", tasks_path);
+    log::info!(
+        "[watch] Processed 태스크 폴링 시작 ({})",
+        parsed.tasks_path.display()
+    );
     loop {
         match table.fetch_processed().await {
             Ok(tasks) if !tasks.is_empty() => {
                 for task in tasks {
+                    let run_id = derive_run_identity(Some(&task.task_id), None)?;
+                    let finalize_path = finalize_record_path(&parsed.state, &run_id);
+                    if finalize_path.exists() {
+                        log::info!(
+                            "[watch] finalize record exists; skipping {} ({})",
+                            task.task_id,
+                            finalize_path.display()
+                        );
+                        continue;
+                    }
+
                     log::info!("[watch] Processed 태스크 발견: {}", task.task_id);
-                    let branch = format!("canopus/{}", task.task_id);
-                    if let Err(e) = post_approval(
-                        repo,
+                    let branch = format!("canopus/{run_id}");
+                    match post_approval(
+                        &parsed.repo,
                         &branch,
-                        &task.task_id,
+                        &run_id,
                         None,
                         &tools,
                         FinalizeMode::DryRun,
                     )
                     .await
-                    {
-                        log::error!("[watch] post_approval 실패 {}: {e}", task.task_id);
+                    .and_then(|output| {
+                        persist_finalize_record_if_absent(&parsed.state, &run_id, &output)
+                    }) {
+                        Ok(()) => log::info!(
+                            "[watch] finalize record persisted for {} ({})",
+                            task.task_id,
+                            finalize_path.display()
+                        ),
+                        Err(e) => log::error!("[watch] finalize 실패 {}: {e}", task.task_id),
                     }
                 }
             }
             Ok(_) => {}
             Err(e) => log::warn!("[watch] fetch_processed 실패: {e}"),
+        }
+        if parsed.once {
+            return Ok(());
         }
         tokio::time::sleep(interval).await;
     }
@@ -633,10 +662,58 @@ async fn post_approval(
 }
 
 fn persist_finalize_record(state: &Path, run_id: &str, output: &str) -> CanopusResult<()> {
-    let runs_dir = state.join("runs");
-    fs::create_dir_all(&runs_dir)?;
-    fs::write(runs_dir.join(format!("{run_id}-finalize.txt")), output)?;
+    let path = finalize_record_path(state, run_id);
+    if let Some(runs_dir) = path.parent() {
+        fs::create_dir_all(runs_dir)?;
+    }
+    fs::write(path, output)?;
     Ok(())
+}
+
+fn persist_finalize_record_if_absent(
+    state: &Path,
+    run_id: &str,
+    output: &str,
+) -> CanopusResult<()> {
+    let path = finalize_record_path(state, run_id);
+    if path.exists() {
+        log::info!(
+            "[watch] finalize record exists after dry-run; preserving {}",
+            path.display()
+        );
+        return Ok(());
+    }
+    if let Some(runs_dir) = path.parent() {
+        fs::create_dir_all(runs_dir)?;
+    }
+    fs::write(path, output)?;
+    Ok(())
+}
+
+fn finalize_record_path(state: &Path, run_id: &str) -> PathBuf {
+    state.join("runs").join(format!("{run_id}-finalize.txt"))
+}
+
+fn persist_upstream_provenance(
+    artifact_store: &LocalFileArtifactStore,
+    state_path: &Path,
+    agenda_id: &str,
+    parsed: &SubmitArgs,
+    stage_records: &mut Vec<StageRecord>,
+) -> CanopusResult<()> {
+    let Some(content) = parsed.upstream_provenance_markdown() else {
+        return Ok(());
+    };
+
+    let stage = StageTimer::start("upstream-provenance");
+    let artifact = Artifact {
+        task_id: format!("{agenda_id}-upstream-provenance"),
+        kind: ArtifactKind::RuntimeLog,
+        content,
+    };
+    let saved = artifact_store.save(&artifact)?;
+    stage_records.push(stage.finish("ok", vec![saved.path.display().to_string()]));
+    persist_run_records(state_path, agenda_id, stage_records)
 }
 
 fn live_mutations_enabled() -> bool {
@@ -716,6 +793,9 @@ struct SubmitArgs {
     task_type: Option<TaskType>,
     agenda_id: Option<String>,
     task_id: Option<String>,
+    task_status: Option<String>,
+    task_created_at: Option<String>,
+    task_updated_at: Option<String>,
     role_mode: String,
     github_owner: Option<String>,
     github_repo: Option<String>,
@@ -745,6 +825,9 @@ impl SubmitArgs {
         let mut task_type = None;
         let mut agenda_id = None;
         let mut task_id = None;
+        let mut task_status = None;
+        let mut task_created_at = None;
+        let mut task_updated_at = None;
         let mut role_mode = "standard".to_string();
         let mut github_owner = env_non_empty("GITHUB_OWNER");
         let mut github_repo = env_non_empty("GITHUB_REPO");
@@ -798,6 +881,20 @@ impl SubmitArgs {
                 "--task-id" => {
                     index += 1;
                     task_id = Some(required_value(args, index, "--task-id")?.to_string());
+                }
+                "--task-status" => {
+                    index += 1;
+                    task_status = Some(required_value(args, index, "--task-status")?.to_string());
+                }
+                "--task-created-at" => {
+                    index += 1;
+                    task_created_at =
+                        Some(required_value(args, index, "--task-created-at")?.to_string());
+                }
+                "--task-updated-at" => {
+                    index += 1;
+                    task_updated_at =
+                        Some(required_value(args, index, "--task-updated-at")?.to_string());
                 }
                 "--role-mode" => {
                     index += 1;
@@ -929,6 +1026,9 @@ impl SubmitArgs {
             task_type,
             agenda_id,
             task_id,
+            task_status,
+            task_created_at,
+            task_updated_at,
             role_mode,
             github_owner,
             github_repo,
@@ -948,6 +1048,85 @@ impl SubmitArgs {
             github_project_status_option_id,
             github_project_status_option_name,
             allow_github_mutation,
+        })
+    }
+}
+
+impl SubmitArgs {
+    fn has_upstream_provenance(&self) -> bool {
+        self.task_status.is_some()
+            || self.task_created_at.is_some()
+            || self.task_updated_at.is_some()
+    }
+
+    fn upstream_provenance_markdown(&self) -> Option<String> {
+        self.has_upstream_provenance().then(|| {
+            format!(
+                "# Upstream Task Provenance\n\nsource_task_id: {}\ntask_status: {}\ntask_created_at: {}\ntask_updated_at: {}\n",
+                self.task_id.as_deref().unwrap_or("(none)"),
+                self.task_status.as_deref().unwrap_or("(none)"),
+                self.task_created_at.as_deref().unwrap_or("(none)"),
+                self.task_updated_at.as_deref().unwrap_or("(none)")
+            )
+        })
+    }
+}
+
+struct WatchArgs {
+    repo: PathBuf,
+    state: PathBuf,
+    tasks_path: PathBuf,
+    once: bool,
+}
+
+impl WatchArgs {
+    fn parse(args: &[String]) -> CanopusResult<Self> {
+        let mut repo = env_non_empty("CANOPUS_REPO")
+            .or_else(|| env_non_empty("CANOPUS_REPO_PATH"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut state: Option<PathBuf> = env_non_empty("CANOPUS_STATE")
+            .or_else(|| env_non_empty("CANOPUS_STATE_PATH"))
+            .map(PathBuf::from);
+        let mut tasks_path: Option<PathBuf> = None;
+        let mut once = false;
+        let mut index = 0;
+
+        while index < args.len() {
+            match args[index].as_str() {
+                "--repo" => {
+                    index += 1;
+                    repo = PathBuf::from(required_value(args, index, "--repo")?);
+                }
+                "--state" => {
+                    index += 1;
+                    state = Some(PathBuf::from(required_value(args, index, "--state")?));
+                }
+                "--once" => once = true,
+                value if value.starts_with("--") => {
+                    return Err(CanopusError::InvalidInput(format!(
+                        "unknown watch argument: {value}"
+                    )));
+                }
+                value => {
+                    if tasks_path.is_some() {
+                        return Err(CanopusError::InvalidInput(
+                            "watch accepts at most one tasks path".to_string(),
+                        ));
+                    }
+                    tasks_path = Some(PathBuf::from(value));
+                }
+            }
+            index += 1;
+        }
+
+        let state = state.unwrap_or_else(|| repo.join(".canopus"));
+        let tasks_path = tasks_path.unwrap_or_else(|| state.join("tasks.json"));
+        Ok(Self {
+            repo,
+            state,
+            tasks_path,
+            once,
         })
     }
 }
@@ -1027,7 +1206,7 @@ impl FinalizeArgs {
 
 fn agent_task(agenda: &Agenda, suffix: &str, role: AgentRole, parsed: &SubmitArgs) -> AgentTask {
     let id = format!("{}-{}", agenda.id, suffix);
-    AgentTask::for_agenda_with_all_metadata(
+    let mut task = AgentTask::for_agenda_with_all_metadata(
         id,
         agenda,
         role,
@@ -1035,7 +1214,22 @@ fn agent_task(agenda: &Agenda, suffix: &str, role: AgentRole, parsed: &SubmitArg
         parsed.task_id.clone(),
         github_issue_metadata(parsed),
         github_project_metadata(parsed),
-    )
+    );
+    if parsed.has_upstream_provenance() {
+        task.prompt.push_str(&format!(
+            "\nUpstream task status: {}",
+            parsed.task_status.as_deref().unwrap_or("(none)")
+        ));
+        task.prompt.push_str(&format!(
+            "\nUpstream task created_at: {}",
+            parsed.task_created_at.as_deref().unwrap_or("(none)")
+        ));
+        task.prompt.push_str(&format!(
+            "\nUpstream task updated_at: {}",
+            parsed.task_updated_at.as_deref().unwrap_or("(none)")
+        ));
+    }
+    task
 }
 
 fn github_issue_metadata(parsed: &SubmitArgs) -> Option<GitHubIssueMetadata> {
@@ -1191,7 +1385,7 @@ fn parse_task_type(value: &str) -> CanopusResult<TaskType> {
 }
 
 fn usage() -> String {
-    "usage: canopus submit [--repo <path>] [--state <path>] [--agenda-id <id>] [--task-type <type>] <request>".to_string()
+    "usage: canopus submit [--repo <path>] [--state <path>] [--agenda-id <id>] [--task-type <type>] <request> | canopus watch [--repo <path>] [--state <path>] [--once] [tasks-path] | canopus finalize [--repo <path>] [--state <path>] (--agenda-id <id>|--task-id <id>)".to_string()
 }
 
 #[cfg(test)]
