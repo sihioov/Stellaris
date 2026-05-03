@@ -58,6 +58,14 @@ GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "").strip()
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()
 GITHUB_PROJECT_ID = os.environ.get("GITHUB_PROJECT_ID", "").strip()
 GITHUB_PROJECT_URL = os.environ.get("GITHUB_PROJECT_URL", "").strip()
+GITHUB_PROJECT_OWNER_KIND = os.environ.get("GITHUB_PROJECT_OWNER_KIND", "").strip()
+GITHUB_PROJECT_OWNER = os.environ.get("GITHUB_PROJECT_OWNER", "").strip()
+GITHUB_PROJECT_NUMBER = os.environ.get("GITHUB_PROJECT_NUMBER", "").strip()
+GITHUB_PROJECT_STATUS_FIELD_ID = os.environ.get("GITHUB_PROJECT_STATUS_FIELD_ID", "").strip()
+GITHUB_PROJECT_STATUS_FIELD_NAME = os.environ.get("GITHUB_PROJECT_STATUS_FIELD_NAME", "").strip()
+GITHUB_PROJECT_STATUS_OPTION_ID = os.environ.get("GITHUB_PROJECT_STATUS_OPTION_ID", "").strip()
+GITHUB_PROJECT_STATUS_OPTION_NAME = os.environ.get("GITHUB_PROJECT_STATUS_OPTION_NAME", "").strip()
+CANOPUS_GITHUB_PROJECT_MODE = os.environ.get("CANOPUS_GITHUB_PROJECT_MODE", "").strip()
 
 
 def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -180,6 +188,14 @@ def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_t
         "github_project_url": GITHUB_PROJECT_URL or None,
         "github_project_item_id": None,
         "github_project_status": "Pending",
+        "github_project_owner_kind": GITHUB_PROJECT_OWNER_KIND or None,
+        "github_project_owner": GITHUB_PROJECT_OWNER or None,
+        "github_project_number": GITHUB_PROJECT_NUMBER or None,
+        "github_project_status_field_id": GITHUB_PROJECT_STATUS_FIELD_ID or None,
+        "github_project_status_field_name": GITHUB_PROJECT_STATUS_FIELD_NAME or None,
+        "github_project_status_option_id": GITHUB_PROJECT_STATUS_OPTION_ID or None,
+        "github_project_status_option_name": GITHUB_PROJECT_STATUS_OPTION_NAME or None,
+        "github_project_mode": CANOPUS_GITHUB_PROJECT_MODE or None,
         "discord_channel_id": str(ctx.channel.id),
         "discord_message_id": str(ctx.message.id),
         "discord_message_url": build_discord_message_link(ctx),
@@ -869,6 +885,11 @@ async def cmd_show(ctx, task_id: str = None):
         "github_project_id",
         "github_project_url",
         "github_project_item_id",
+        "github_project_owner_kind",
+        "github_project_owner",
+        "github_project_number",
+        "github_project_status",
+        "github_project_mode",
         "github_pr",
         "github_pr_url",
         "pr_url",

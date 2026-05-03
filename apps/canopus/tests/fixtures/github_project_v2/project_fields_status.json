@@ -1,0 +1,20 @@
+{
+  "data": {
+    "node": {
+      "fields": {
+        "nodes": [
+          { "id": "PVTF_title", "name": "Title" },
+          {
+            "id": "PVTSSF_status",
+            "name": "Status",
+            "options": [
+              { "id": "todo", "name": "Todo" },
+              { "id": "ready", "name": "Ready" },
+              { "id": "done", "name": "Done" }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

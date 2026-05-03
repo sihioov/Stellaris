@@ -80,6 +80,12 @@ class DiscordBotConfigTests(unittest.TestCase):
             GITHUB_REPO="demo",
             GITHUB_PROJECT_ID="PVT_kwDOdemo",
             GITHUB_PROJECT_URL="https://github.com/orgs/acme/projects/1",
+            GITHUB_PROJECT_OWNER_KIND="org",
+            GITHUB_PROJECT_OWNER="acme",
+            GITHUB_PROJECT_NUMBER="1",
+            GITHUB_PROJECT_STATUS_FIELD_NAME="Status",
+            GITHUB_PROJECT_STATUS_OPTION_NAME="Ready",
+            CANOPUS_GITHUB_PROJECT_MODE="dry-run-offline",
         )
         ctx = types.SimpleNamespace(
             guild=types.SimpleNamespace(id=1),
@@ -100,6 +106,12 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertEqual(payload["github_repo_slug"], "acme/demo")
         self.assertIn("https://github.com/acme/demo/issues/new", payload["github_issue_create_url"])
         self.assertEqual(payload["github_project_id"], "PVT_kwDOdemo")
+        self.assertEqual(payload["github_project_owner_kind"], "org")
+        self.assertEqual(payload["github_project_owner"], "acme")
+        self.assertEqual(payload["github_project_number"], "1")
+        self.assertEqual(payload["github_project_status_field_name"], "Status")
+        self.assertEqual(payload["github_project_status_option_name"], "Ready")
+        self.assertEqual(payload["github_project_mode"], "dry-run-offline")
         self.assertEqual(payload["discord_message_url"], "https://discord.com/channels/1/2/3")
         self.assertEqual(payload["confirmation_state"], "requested")
 

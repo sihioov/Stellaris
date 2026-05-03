@@ -3,6 +3,7 @@ use crate::error::{Result, StellarisError};
 use crate::message::TaskMessage;
 use crate::status::TaskStatus;
 use async_trait::async_trait;
+use chrono::Utc;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::PathBuf;
@@ -19,27 +20,6 @@ impl FileTaskTable {
             path,
             lock: Mutex::new(()),
         }
-    }
-
-    pub async fn update_status_if_current(
-        &self,
-        task_id: &str,
-        current: TaskStatus,
-        next: TaskStatus,
-    ) -> Result<bool> {
-        let mut updated = false;
-        self.modify(
-            |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
-                Some(t) if t.meta.status == current => {
-                    t.meta.status = next;
-                    updated = true;
-                    Ok(())
-                }
-                Some(_) => Ok(()),
-                None => Err(StellarisError::DefaultError),
-            },
-        )?;
-        Ok(updated)
     }
 
     /// Read-modify-write under both the intra-process mutex and a cross-process
@@ -123,12 +103,37 @@ impl TaskTable for FileTaskTable {
         self.modify(
             |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
                 Some(t) => {
+                    let now = Utc::now();
                     t.meta.status = status;
+                    t.meta.updated_at = now;
                     Ok(())
                 }
                 None => Err(StellarisError::DefaultError),
             },
         )
+    }
+
+    async fn update_status_if_current(
+        &self,
+        task_id: &str,
+        current: TaskStatus,
+        next: TaskStatus,
+    ) -> Result<bool> {
+        let mut updated = false;
+        self.modify(
+            |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
+                Some(t) if t.meta.status == current => {
+                    let now = Utc::now();
+                    t.meta.status = next;
+                    t.meta.updated_at = now;
+                    updated = true;
+                    Ok(())
+                }
+                Some(_) => Ok(()),
+                None => Err(StellarisError::DefaultError),
+            },
+        )?;
+        Ok(updated)
     }
 
     async fn delete(&self, task_id: &str) -> Result<()> {
@@ -208,6 +213,59 @@ mod tests {
             .unwrap());
         let stored = table.fetch("T1").await.unwrap().unwrap();
         assert_eq!(stored.meta.status, TaskStatus::PendingReview);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn update_status_bumps_updated_at() {
+        let path = std::env::temp_dir().join(format!(
+            "dysonsphere-update-status-ts-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table.create(task("T1", TaskStatus::Pending)).await.unwrap();
+        let before = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
+
+        table
+            .update_status("T1", TaskStatus::Dispatched)
+            .await
+            .unwrap();
+
+        let stored = table.fetch("T1").await.unwrap().unwrap();
+        assert_eq!(stored.meta.status, TaskStatus::Dispatched);
+        assert!(stored.meta.updated_at > before);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn update_status_if_current_bumps_updated_at_only_on_success() {
+        let path = std::env::temp_dir().join(format!(
+            "dysonsphere-cas-status-ts-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table
+            .create(task("T1", TaskStatus::Dispatched))
+            .await
+            .unwrap();
+        let before = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
+
+        assert!(table
+            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::PendingReview)
+            .await
+            .unwrap());
+        let after_success = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
+        assert!(after_success > before);
+
+        assert!(!table
+            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::Failed)
+            .await
+            .unwrap());
+        let after_stale = table.fetch("T1").await.unwrap().unwrap();
+        assert_eq!(after_stale.meta.status, TaskStatus::PendingReview);
+        assert_eq!(after_stale.meta.updated_at, after_success);
         let _ = fs::remove_file(path);
     }
 }

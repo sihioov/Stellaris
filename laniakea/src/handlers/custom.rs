@@ -37,6 +37,18 @@ struct CanopusMetadata {
     agenda_id: Option<String>,
     github_issue_url: Option<String>,
     github_issue_number: Option<String>,
+    github_project_id: Option<String>,
+    github_project_url: Option<String>,
+    github_project_item_id: Option<String>,
+    github_project_status: Option<String>,
+    github_project_owner_kind: Option<String>,
+    github_project_owner: Option<String>,
+    github_project_number: Option<String>,
+    github_project_status_field_id: Option<String>,
+    github_project_status_field_name: Option<String>,
+    github_project_status_option_id: Option<String>,
+    github_project_status_option_name: Option<String>,
+    github_project_mode: Option<String>,
 }
 
 pub async fn handle(task: &TaskMessage, label: &str) -> Result<()> {
@@ -102,9 +114,71 @@ fn canopus_submit_args(
     {
         args.extend(["--github-issue-number".to_string(), number]);
     }
+    push_optional_arg(&mut args, "--github-project-id", metadata.github_project_id);
+    push_optional_arg(
+        &mut args,
+        "--github-project-url",
+        metadata.github_project_url,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-item-id",
+        metadata.github_project_item_id,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-status",
+        metadata.github_project_status,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-owner-kind",
+        metadata.github_project_owner_kind,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-owner",
+        metadata.github_project_owner,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-number",
+        metadata.github_project_number,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-status-field-id",
+        metadata.github_project_status_field_id,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-status-field-name",
+        metadata.github_project_status_field_name,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-status-option-id",
+        metadata.github_project_status_option_id,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-status-option-name",
+        metadata.github_project_status_option_name,
+    );
+    push_optional_arg(
+        &mut args,
+        "--github-project-mode",
+        metadata.github_project_mode,
+    );
 
     args.push(request.to_string());
     args
+}
+
+fn push_optional_arg(args: &mut Vec<String>, flag: &str, value: Option<String>) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        args.extend([flag.to_string(), value]);
+    }
 }
 
 fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
@@ -128,6 +202,18 @@ fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
                 github_issue_number: get("github_issue_number")
                     .or_else(|| get("github_issue"))
                     .or_else(|| get("issue_number")),
+                github_project_id: get("github_project_id"),
+                github_project_url: get("github_project_url"),
+                github_project_item_id: get("github_project_item_id"),
+                github_project_status: get("github_project_status"),
+                github_project_owner_kind: get("github_project_owner_kind"),
+                github_project_owner: get("github_project_owner"),
+                github_project_number: get("github_project_number"),
+                github_project_status_field_id: get("github_project_status_field_id"),
+                github_project_status_field_name: get("github_project_status_field_name"),
+                github_project_status_option_id: get("github_project_status_option_id"),
+                github_project_status_option_name: get("github_project_status_option_name"),
+                github_project_mode: get("github_project_mode"),
             };
         }
     }
@@ -149,6 +235,26 @@ fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
             "github_issue_number" | "github_issue" | "issue_number" => {
                 metadata.github_issue_number = Some(value)
             }
+            "github_project_id" => metadata.github_project_id = Some(value),
+            "github_project_url" => metadata.github_project_url = Some(value),
+            "github_project_item_id" => metadata.github_project_item_id = Some(value),
+            "github_project_status" => metadata.github_project_status = Some(value),
+            "github_project_owner_kind" => metadata.github_project_owner_kind = Some(value),
+            "github_project_owner" => metadata.github_project_owner = Some(value),
+            "github_project_number" => metadata.github_project_number = Some(value),
+            "github_project_status_field_id" => {
+                metadata.github_project_status_field_id = Some(value)
+            }
+            "github_project_status_field_name" => {
+                metadata.github_project_status_field_name = Some(value)
+            }
+            "github_project_status_option_id" => {
+                metadata.github_project_status_option_id = Some(value)
+            }
+            "github_project_status_option_name" => {
+                metadata.github_project_status_option_name = Some(value)
+            }
+            "github_project_mode" => metadata.github_project_mode = Some(value),
             _ => {}
         }
     }
@@ -281,7 +387,16 @@ mod tests {
             "request": "fix routed bug",
             "agenda_id": "AGENDA-7",
             "github_issue_url": "https://github.example/owner/repo/issues/7",
-            "github_issue_number": 7
+            "github_issue_number": 7,
+            "github_project_id": "PVT_project",
+            "github_project_url": "https://github.com/orgs/acme/projects/1",
+            "github_project_status": "Ready",
+            "github_project_owner_kind": "org",
+            "github_project_owner": "acme",
+            "github_project_number": 1,
+            "github_project_status_field_name": "Status",
+            "github_project_status_option_name": "Ready",
+            "github_project_mode": "dry-run-offline"
         })
         .to_string();
         let args = canopus_submit_args(
@@ -313,6 +428,32 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--github-issue-number", "7"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-id", "PVT_project"]));
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "--github-project-url",
+                "https://github.com/orgs/acme/projects/1"
+            ]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-status", "Ready"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-owner-kind", "org"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-number", "1"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-status-field-name", "Status"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-status-option-name", "Ready"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-mode", "dry-run-offline"]));
         assert_eq!(args.last().unwrap(), "fix routed bug");
     }
 

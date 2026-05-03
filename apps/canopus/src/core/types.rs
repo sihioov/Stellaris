@@ -53,6 +53,7 @@ pub struct AgentTask {
     pub role_mode: String,
     pub source_task_id: Option<String>,
     pub github_issue: Option<GitHubIssueMetadata>,
+    pub github_project: Option<GitHubProjectMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,68 @@ pub struct GitHubIssueMetadata {
     pub repo: Option<String>,
     pub number: Option<u64>,
     pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitHubProjectMode {
+    #[default]
+    DryRunOffline,
+    ValidateReadOnly,
+    MutateLive,
+}
+
+impl GitHubProjectMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DryRunOffline => "dry-run-offline",
+            Self::ValidateReadOnly => "validate-read-only",
+            Self::MutateLive => "mutate-live",
+        }
+    }
+
+    pub fn parse(value: &str) -> CanopusResult<Self> {
+        match value {
+            "dry-run-offline" => Ok(Self::DryRunOffline),
+            "validate-read-only" => Ok(Self::ValidateReadOnly),
+            "mutate-live" => Ok(Self::MutateLive),
+            _ => Err(CanopusError::InvalidInput(format!(
+                "unsupported GitHub Project mode `{value}` (expected dry-run-offline, validate-read-only, or mutate-live)"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitHubProjectMetadata {
+    pub id: Option<String>,
+    pub url: Option<String>,
+    pub item_id: Option<String>,
+    pub status: Option<String>,
+    pub owner_kind: Option<String>,
+    pub owner: Option<String>,
+    pub number: Option<u64>,
+    pub status_field_id: Option<String>,
+    pub status_field_name: Option<String>,
+    pub status_option_id: Option<String>,
+    pub status_option_name: Option<String>,
+    pub mode: Option<GitHubProjectMode>,
+}
+
+impl GitHubProjectMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.id.is_none()
+            && self.url.is_none()
+            && self.item_id.is_none()
+            && self.status.is_none()
+            && self.owner_kind.is_none()
+            && self.owner.is_none()
+            && self.number.is_none()
+            && self.status_field_id.is_none()
+            && self.status_field_name.is_none()
+            && self.status_option_id.is_none()
+            && self.status_option_name.is_none()
+            && self.mode.is_none()
+    }
 }
 
 impl AgentTask {
@@ -75,6 +138,26 @@ impl AgentTask {
         role_mode: impl Into<String>,
         source_task_id: Option<String>,
         github_issue: Option<GitHubIssueMetadata>,
+    ) -> Self {
+        Self::for_agenda_with_all_metadata(
+            id,
+            agenda,
+            role,
+            role_mode,
+            source_task_id,
+            github_issue,
+            None,
+        )
+    }
+
+    pub fn for_agenda_with_all_metadata(
+        id: impl Into<String>,
+        agenda: &Agenda,
+        role: AgentRole,
+        role_mode: impl Into<String>,
+        source_task_id: Option<String>,
+        github_issue: Option<GitHubIssueMetadata>,
+        github_project: Option<GitHubProjectMetadata>,
     ) -> Self {
         let role_mode = role_mode.into();
         let mut prompt = format!("Agenda {}: {}", agenda.id, agenda.request);
@@ -92,6 +175,20 @@ impl AgentTask {
                 prompt.push_str(&format!("\nGitHub issue URL: {url}"));
             }
         }
+        if let Some(project) = &github_project {
+            if let Some(id) = &project.id {
+                prompt.push_str(&format!("\nGitHub project ID: {id}"));
+            }
+            if let Some(url) = &project.url {
+                prompt.push_str(&format!("\nGitHub project URL: {url}"));
+            }
+            if let Some(item_id) = &project.item_id {
+                prompt.push_str(&format!("\nGitHub project item ID: {item_id}"));
+            }
+            if let Some(status) = &project.status {
+                prompt.push_str(&format!("\nGitHub project status: {status}"));
+            }
+        }
 
         Self {
             id: id.into(),
@@ -101,6 +198,7 @@ impl AgentTask {
             role_mode,
             source_task_id,
             github_issue,
+            github_project,
         }
     }
 
@@ -127,6 +225,46 @@ impl AgentTask {
             }
             if let Some(url) = &issue.url {
                 payload.push_str(&format!("github_issue_url={url}\n"));
+            }
+        }
+        if let Some(project) = &self.github_project {
+            if let Some(id) = &project.id {
+                payload.push_str(&format!("github_project_id={id}\n"));
+            }
+            if let Some(url) = &project.url {
+                payload.push_str(&format!("github_project_url={url}\n"));
+            }
+            if let Some(item_id) = &project.item_id {
+                payload.push_str(&format!("github_project_item_id={item_id}\n"));
+            }
+            if let Some(status) = &project.status {
+                payload.push_str(&format!("github_project_status={status}\n"));
+            }
+            if let Some(owner_kind) = &project.owner_kind {
+                payload.push_str(&format!("github_project_owner_kind={owner_kind}\n"));
+            }
+            if let Some(owner) = &project.owner {
+                payload.push_str(&format!("github_project_owner={owner}\n"));
+            }
+            if let Some(number) = project.number {
+                payload.push_str(&format!("github_project_number={number}\n"));
+            }
+            if let Some(field_id) = &project.status_field_id {
+                payload.push_str(&format!("github_project_status_field_id={field_id}\n"));
+            }
+            if let Some(field_name) = &project.status_field_name {
+                payload.push_str(&format!("github_project_status_field_name={field_name}\n"));
+            }
+            if let Some(option_id) = &project.status_option_id {
+                payload.push_str(&format!("github_project_status_option_id={option_id}\n"));
+            }
+            if let Some(option_name) = &project.status_option_name {
+                payload.push_str(&format!(
+                    "github_project_status_option_name={option_name}\n"
+                ));
+            }
+            if let Some(mode) = project.mode {
+                payload.push_str(&format!("github_project_mode={}\n", mode.as_str()));
             }
         }
         payload

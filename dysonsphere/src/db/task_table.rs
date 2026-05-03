@@ -14,6 +14,13 @@ pub trait TaskTable {
 
     async fn update_status(&self, task_id: &str, status: TaskStatus) -> Result<()>;
 
+    async fn update_status_if_current(
+        &self,
+        task_id: &str,
+        current: TaskStatus,
+        next: TaskStatus,
+    ) -> Result<bool>;
+
     async fn delete(&self, task_id: &str) -> Result<()>;
 
     async fn fetch_pending(&self) -> Result<Vec<TaskMessage>>;

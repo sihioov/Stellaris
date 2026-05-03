@@ -227,3 +227,77 @@ async fn submit_routes_roles_from_upstream_task_type_and_id() {
 
     let _ = fs::remove_dir_all(repo);
 }
+
+#[tokio::test]
+async fn submit_issue_only_flow_ignores_project_mode_without_project_identity() {
+    let repo = git_repo("cli-submit-issue-only-project-mode");
+    let state = repo.join(".canopus");
+
+    cli::run(vec![
+        "canopus".to_string(),
+        "submit".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+        "--state".to_string(),
+        state.display().to_string(),
+        "--agenda-id".to_string(),
+        "ISSUE-ONLY-1".to_string(),
+        "--github-issue-number".to_string(),
+        "7".to_string(),
+        "--github-project-mode".to_string(),
+        "dry-run-offline".to_string(),
+        "--github-project-status-field-name".to_string(),
+        "Status".to_string(),
+        "issue-only request".to_string(),
+    ])
+    .await
+    .unwrap();
+
+    let run_record_path = state.join("runs").join("issue-only-1.json");
+    let run_records: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&run_record_path).unwrap()).unwrap();
+    let stage_names = run_records
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(stage_names.contains(&"complete".to_string()));
+    assert!(!stage_names.contains(&"github-project".to_string()));
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
+async fn submit_project_validate_mode_fails_gate_before_credentials() {
+    let repo = git_repo("cli-submit-project-gate-before-credentials");
+    let state = repo.join(".canopus");
+
+    let err = cli::run(vec![
+        "canopus".to_string(),
+        "submit".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+        "--state".to_string(),
+        state.display().to_string(),
+        "--agenda-id".to_string(),
+        "PROJECT-GATE-1".to_string(),
+        "--github-project-id".to_string(),
+        "PVT_project".to_string(),
+        "--github-project-item-id".to_string(),
+        "PVTI_existing".to_string(),
+        "--github-project-status-field-name".to_string(),
+        "Status".to_string(),
+        "--github-project-status-option-name".to_string(),
+        "Ready".to_string(),
+        "--github-project-mode".to_string(),
+        "validate-read-only".to_string(),
+        "project validate request".to_string(),
+    ])
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("CANOPUS_ENABLE_GITHUB=1"));
+    assert!(!err.to_string().contains("GITHUB_TOKEN"));
+    let _ = fs::remove_dir_all(repo);
+}

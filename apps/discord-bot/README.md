@@ -48,7 +48,12 @@ python bot.py
 | `ASK_TIMEOUT_SECONDS` | `30` | Timeout for `!ask` backend execution |
 | `ASK_MAX_OUTPUT_CHARS` | `1800` | Maximum response characters sent back to Discord |
 | `GITHUB_OWNER` / `GITHUB_REPO` | *(empty)* | Repository slug used to populate agenda links and Issue creation URLs in task payloads |
-| `GITHUB_PROJECT_ID` / `GITHUB_PROJECT_URL` | *(empty)* | Optional GitHub Project metadata copied into task payloads/status output |
+| `GITHUB_PROJECT_ID` | *(empty)* | Optional GitHub Project v2 GraphQL node ID copied into task payloads; this is not a URL |
+| `GITHUB_PROJECT_URL` | *(empty)* | Optional canonical `https://github.com/users/<owner>/projects/<number>` or `https://github.com/orgs/<owner>/projects/<number>` URL |
+| `GITHUB_PROJECT_OWNER_KIND` / `GITHUB_PROJECT_OWNER` / `GITHUB_PROJECT_NUMBER` | *(empty)* | Optional owner/number lookup metadata used when `GITHUB_PROJECT_ID` is absent |
+| `GITHUB_PROJECT_STATUS_FIELD_ID` / `GITHUB_PROJECT_STATUS_FIELD_NAME` | *(empty)* / `Status` | Optional Project v2 Status field identity |
+| `GITHUB_PROJECT_STATUS_OPTION_ID` / `GITHUB_PROJECT_STATUS_OPTION_NAME` | *(empty)* | Optional Project v2 Status option identity |
+| `CANOPUS_GITHUB_PROJECT_MODE` | `dry-run-offline` | Project v2 mode copied into payloads when configured: `dry-run-offline`, `validate-read-only`, or `mutate-live` |
 
 Example local echo backend for development:
 
@@ -59,3 +64,5 @@ ASK_COMMAND="python3 -c 'import sys; print(\"Answer:\", sys.stdin.read())'" pyth
 ## Shared GitHub-integrated v1 path
 
 For the local v1 pipeline, set `TASKS_JSON_PATH` to the same absolute `tasks.json` consumed by TON618 (`TASKS_JSON_PATH`) and Laniakea (`LANIAKEA_FILE_PATH`). `!run` remains the human request confirmation, creates a unique `agenda_id`, and records GitHub repository/project metadata in the task payload without requiring the Discord bot to push branches or create PRs directly. `!approve` is the final human gate: it moves a `PendingReview` task to `Processed`, records approval timestamps, and sets `finalize_requested_at` for the Canopus finalization owner. `!reject` records rejection metadata and prevents finalization.
+
+GitHub Project v2 integration is dry-run/offline by default. The Discord bot only copies configured metadata into the task payload; Canopus owns validation or mutation later in the pipeline. Live Project mutations require all Canopus gates (`CANOPUS_ENABLE_GITHUB=1`, `CANOPUS_ENABLE_LIVE_MUTATIONS=1`, and `CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=1`) plus a PAT or GitHub App credential with Projects permissions. GitHub Actions `GITHUB_TOKEN` is not sufficient for Project v2 access.

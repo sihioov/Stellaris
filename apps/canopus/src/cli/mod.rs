@@ -1,11 +1,15 @@
 use crate::adapters::agent_runtime::{CommandAgentRuntime, MockAgentRuntime};
 use crate::adapters::artifact_store::LocalFileArtifactStore;
-use crate::adapters::github::GitHubClient;
+use crate::adapters::github::{
+    build_project_sync_plan, GitHubClient, GitHubProjectGates, GitHubProjectSyncConfig,
+    GitHubProjectSyncReport, ProjectOwnerKind,
+};
 use crate::adapters::task_backend::StellarisTaskBackend;
 use crate::adapters::tool_gateway::LocalToolGateway;
 use crate::core::{
     derive_run_identity, Agenda, AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError,
-    CanopusResult, GitHubIssueMetadata, Pipeline, StageRecord, WorkflowState,
+    CanopusResult, GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode, Pipeline,
+    StageRecord, WorkflowState,
 };
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
 use chrono::{DateTime, Utc};
@@ -223,6 +227,14 @@ async fn submit(args: &[String]) -> CanopusResult<()> {
         log::info!("[workflow] state: {:?}", state);
     }
 
+    run_github_project_stage(
+        &artifact_store,
+        &parsed.state,
+        &agenda.id,
+        &parsed,
+        &mut stage_records,
+    )?;
+
     state = state
         .transition_to(WorkflowState::Completed)
         .map_err(|e| CanopusError::InvalidInput(e.to_string()))?;
@@ -323,6 +335,137 @@ fn run_check_stage(
     );
     stage_records.push(stage.finish("ok", check_artifacts));
     persist_run_records(state_path, agenda_id, stage_records)
+}
+
+fn run_github_project_stage(
+    artifact_store: &LocalFileArtifactStore,
+    state_path: &Path,
+    agenda_id: &str,
+    parsed: &SubmitArgs,
+    stage_records: &mut Vec<StageRecord>,
+) -> CanopusResult<()> {
+    if !github_project_sync_requested(parsed) {
+        return Ok(());
+    }
+
+    let stage = StageTimer::start("github-project");
+    let artifact = try_stage!(
+        github_project_sync_artifact(agenda_id, parsed),
+        &stage,
+        state_path,
+        agenda_id,
+        stage_records
+    );
+    let saved = try_stage!(
+        artifact_store.save(&artifact),
+        &stage,
+        state_path,
+        agenda_id,
+        stage_records
+    );
+    stage_records.push(stage.finish("ok", vec![saved.path.display().to_string()]));
+    persist_run_records(state_path, agenda_id, stage_records)
+}
+
+fn github_project_sync_artifact(agenda_id: &str, parsed: &SubmitArgs) -> CanopusResult<Artifact> {
+    let mode = parsed.github_project_mode;
+    if parsed.github_project_item_id.is_none() && parsed.github_issue_number.is_none() {
+        if matches!(mode, GitHubProjectMode::DryRunOffline) {
+            return Ok(Artifact {
+                task_id: agenda_id.to_string(),
+                kind: ArtifactKind::RuntimeLog,
+                content: format!(
+                    "# GitHub Project v2 Sync\n\nmode: {}\nstatus: skipped\nreason: github_project_item_id or github_issue_number is required before a Project item can be added or updated\nhttp: none\nmutation: none\n",
+                    mode.as_str()
+                ),
+            });
+        }
+        return Err(CanopusError::InvalidInput(
+            "GitHub Project sync requires --github-project-item-id or --github-issue-number"
+                .to_string(),
+        ));
+    }
+
+    let config = github_project_sync_config(parsed)?;
+    let gates = github_project_gates_from_env();
+    match mode {
+        GitHubProjectMode::DryRunOffline => {
+            let plan = build_project_sync_plan(&config, &gates)?;
+            Ok(Artifact {
+                task_id: agenda_id.to_string(),
+                kind: ArtifactKind::RuntimeLog,
+                content: github_project_plan_markdown(&plan, &gates),
+            })
+        }
+        GitHubProjectMode::ValidateReadOnly | GitHubProjectMode::MutateLive => {
+            let _plan = build_project_sync_plan(&config, &gates)?;
+            let client = GitHubClient::from_env().ok_or_else(|| {
+                CanopusError::InvalidInput(
+                    "GitHub Project validation/mutation requires GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO".to_string(),
+                )
+            })?;
+            let report = client.sync_project_v2(&config, &gates)?;
+            Ok(Artifact {
+                task_id: agenda_id.to_string(),
+                kind: ArtifactKind::RuntimeLog,
+                content: github_project_report_markdown(&report, &gates),
+            })
+        }
+    }
+}
+
+fn github_project_plan_markdown(
+    plan: &crate::adapters::github::GitHubProjectSyncPlan,
+    gates: &GitHubProjectGates,
+) -> String {
+    let operations = plan
+        .operations
+        .iter()
+        .map(|operation| format!("- {:?}: {}", operation.kind, operation.operation_name))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "# GitHub Project v2 Sync\n\nmode: {}\nhttp: none\nmutation: none\nproject_id_source: {}\nitem_id_source: {}\nstatus_field_source: {}\nstatus_option_source: {}\ngates: enable_github={}, enable_live_mutations={}, allow_project_mutation={}\n\n## Planned operations\n{}\n",
+        plan.mode.as_str(),
+        plan.project_id_source,
+        plan.item_id_source,
+        plan.status_field_source,
+        plan.status_option_source,
+        gates.enable_github,
+        gates.enable_live_mutations,
+        gates.allow_project_mutation,
+        if operations.is_empty() {
+            "- (none)".to_string()
+        } else {
+            operations
+        }
+    )
+}
+
+fn github_project_report_markdown(
+    report: &GitHubProjectSyncReport,
+    gates: &GitHubProjectGates,
+) -> String {
+    let executed = report
+        .executed_operations
+        .iter()
+        .map(|operation| format!("- {operation}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "# GitHub Project v2 Sync\n\nmode: {}\nproject_id: {}\nitem_id: {}\ngates: enable_github={}, enable_live_mutations={}, allow_project_mutation={}\n\n## Executed operations\n{}\n",
+        report.mode.as_str(),
+        report.project_id.as_deref().unwrap_or("(unresolved)"),
+        report.item_id.as_deref().unwrap_or("(unresolved)"),
+        gates.enable_github,
+        gates.enable_live_mutations,
+        gates.allow_project_mutation,
+        if executed.is_empty() {
+            "- (none)".to_string()
+        } else {
+            executed
+        }
+    )
 }
 
 fn maybe_create_qa_issue(agenda: &Agenda, artifacts: &[Artifact]) -> Option<u64> {
@@ -578,6 +721,19 @@ struct SubmitArgs {
     github_repo: Option<String>,
     github_issue_number: Option<u64>,
     github_issue_url: Option<String>,
+    github_project_mode: GitHubProjectMode,
+    github_project_mode_explicit: bool,
+    github_project_id: Option<String>,
+    github_project_url: Option<String>,
+    github_project_item_id: Option<String>,
+    github_project_status: Option<String>,
+    github_project_owner_kind: Option<String>,
+    github_project_owner: Option<String>,
+    github_project_number: Option<u64>,
+    github_project_status_field_id: Option<String>,
+    github_project_status_field_name: Option<String>,
+    github_project_status_option_id: Option<String>,
+    github_project_status_option_name: Option<String>,
     allow_github_mutation: bool,
 }
 
@@ -590,11 +746,31 @@ impl SubmitArgs {
         let mut agenda_id = None;
         let mut task_id = None;
         let mut role_mode = "standard".to_string();
-        let mut github_owner = None;
-        let mut github_repo = None;
+        let mut github_owner = env_non_empty("GITHUB_OWNER");
+        let mut github_repo = env_non_empty("GITHUB_REPO");
         let mut github_issue_number = None;
         let mut github_issue_url = None;
-        let mut allow_github_mutation = env_flag("CANOPUS_ALLOW_GITHUB_MUTATION");
+        let mut github_project_mode = match env_non_empty("CANOPUS_GITHUB_PROJECT_MODE").as_deref()
+        {
+            Some(value) => GitHubProjectMode::parse(value)?,
+            None => GitHubProjectMode::DryRunOffline,
+        };
+        let mut github_project_mode_explicit =
+            env_non_empty("CANOPUS_GITHUB_PROJECT_MODE").is_some();
+        let mut github_project_id = env_non_empty("GITHUB_PROJECT_ID");
+        let mut github_project_url = env_non_empty("GITHUB_PROJECT_URL");
+        let mut github_project_item_id = env_non_empty("GITHUB_PROJECT_ITEM_ID");
+        let mut github_project_status = env_non_empty("GITHUB_PROJECT_STATUS");
+        let mut github_project_owner_kind = env_non_empty("GITHUB_PROJECT_OWNER_KIND");
+        let mut github_project_owner = env_non_empty("GITHUB_PROJECT_OWNER");
+        let mut github_project_number = env_u64("GITHUB_PROJECT_NUMBER")?;
+        let mut github_project_status_field_id = env_non_empty("GITHUB_PROJECT_STATUS_FIELD_ID");
+        let mut github_project_status_field_name =
+            env_non_empty("GITHUB_PROJECT_STATUS_FIELD_NAME");
+        let mut github_project_status_option_id = env_non_empty("GITHUB_PROJECT_STATUS_OPTION_ID");
+        let mut github_project_status_option_name =
+            env_non_empty("GITHUB_PROJECT_STATUS_OPTION_NAME");
+        let mut request_github_mutation = env_flag("CANOPUS_ALLOW_GITHUB_MUTATION");
         let mut index = 0;
 
         while index < args.len() {
@@ -649,7 +825,84 @@ impl SubmitArgs {
                     github_issue_url =
                         Some(required_value(args, index, "--github-issue-url")?.to_string());
                 }
-                "--allow-github-mutation" => allow_github_mutation = true,
+                "--github-project-id" => {
+                    index += 1;
+                    github_project_id =
+                        Some(required_value(args, index, "--github-project-id")?.to_string());
+                }
+                "--github-project-url" => {
+                    index += 1;
+                    github_project_url =
+                        Some(required_value(args, index, "--github-project-url")?.to_string());
+                }
+                "--github-project-item-id" => {
+                    index += 1;
+                    github_project_item_id =
+                        Some(required_value(args, index, "--github-project-item-id")?.to_string());
+                }
+                "--github-project-status" => {
+                    index += 1;
+                    github_project_status =
+                        Some(required_value(args, index, "--github-project-status")?.to_string());
+                }
+                "--github-project-owner-kind" => {
+                    index += 1;
+                    github_project_owner_kind = Some(
+                        required_value(args, index, "--github-project-owner-kind")?.to_string(),
+                    );
+                }
+                "--github-project-owner" => {
+                    index += 1;
+                    github_project_owner =
+                        Some(required_value(args, index, "--github-project-owner")?.to_string());
+                }
+                "--github-project-number" => {
+                    index += 1;
+                    let value = required_value(args, index, "--github-project-number")?;
+                    github_project_number = Some(value.parse().map_err(|_| {
+                        CanopusError::InvalidInput(
+                            "--github-project-number must be a positive integer".to_string(),
+                        )
+                    })?);
+                }
+                "--github-project-status-field-id" => {
+                    index += 1;
+                    github_project_status_field_id = Some(
+                        required_value(args, index, "--github-project-status-field-id")?
+                            .to_string(),
+                    );
+                }
+                "--github-project-status-field-name" => {
+                    index += 1;
+                    github_project_status_field_name = Some(
+                        required_value(args, index, "--github-project-status-field-name")?
+                            .to_string(),
+                    );
+                }
+                "--github-project-status-option-id" => {
+                    index += 1;
+                    github_project_status_option_id = Some(
+                        required_value(args, index, "--github-project-status-option-id")?
+                            .to_string(),
+                    );
+                }
+                "--github-project-status-option-name" => {
+                    index += 1;
+                    github_project_status_option_name = Some(
+                        required_value(args, index, "--github-project-status-option-name")?
+                            .to_string(),
+                    );
+                }
+                "--github-project-mode" => {
+                    index += 1;
+                    github_project_mode = GitHubProjectMode::parse(required_value(
+                        args,
+                        index,
+                        "--github-project-mode",
+                    )?)?;
+                    github_project_mode_explicit = true;
+                }
+                "--allow-github-mutation" => request_github_mutation = true,
                 value if value.starts_with("--") => {
                     return Err(CanopusError::InvalidInput(format!(
                         "unknown submit argument: {value}"
@@ -667,6 +920,8 @@ impl SubmitArgs {
             ));
         }
 
+        let allow_github_mutation = env_flag("CANOPUS_ENABLE_GITHUB") && request_github_mutation;
+
         Ok(Self {
             repo,
             state,
@@ -679,6 +934,19 @@ impl SubmitArgs {
             github_repo,
             github_issue_number,
             github_issue_url,
+            github_project_mode,
+            github_project_mode_explicit,
+            github_project_id,
+            github_project_url,
+            github_project_item_id,
+            github_project_status,
+            github_project_owner_kind,
+            github_project_owner,
+            github_project_number,
+            github_project_status_field_id,
+            github_project_status_field_name,
+            github_project_status_option_id,
+            github_project_status_option_name,
             allow_github_mutation,
         })
     }
@@ -759,13 +1027,14 @@ impl FinalizeArgs {
 
 fn agent_task(agenda: &Agenda, suffix: &str, role: AgentRole, parsed: &SubmitArgs) -> AgentTask {
     let id = format!("{}-{}", agenda.id, suffix);
-    AgentTask::for_agenda_with_metadata(
+    AgentTask::for_agenda_with_all_metadata(
         id,
         agenda,
         role,
         parsed.role_mode.clone(),
         parsed.task_id.clone(),
         github_issue_metadata(parsed),
+        github_project_metadata(parsed),
     )
 }
 
@@ -784,6 +1053,70 @@ fn github_issue_metadata(parsed: &SubmitArgs) -> Option<GitHubIssueMetadata> {
         number: parsed.github_issue_number,
         url: parsed.github_issue_url.clone(),
     })
+}
+
+fn github_project_metadata(parsed: &SubmitArgs) -> Option<GitHubProjectMetadata> {
+    let metadata = GitHubProjectMetadata {
+        id: parsed.github_project_id.clone(),
+        url: parsed.github_project_url.clone(),
+        item_id: parsed.github_project_item_id.clone(),
+        status: parsed.github_project_status.clone(),
+        owner_kind: parsed.github_project_owner_kind.clone(),
+        owner: parsed.github_project_owner.clone(),
+        number: parsed.github_project_number,
+        status_field_id: parsed.github_project_status_field_id.clone(),
+        status_field_name: parsed.github_project_status_field_name.clone(),
+        status_option_id: parsed.github_project_status_option_id.clone(),
+        status_option_name: parsed.github_project_status_option_name.clone(),
+        mode: if parsed.github_project_mode_explicit {
+            Some(parsed.github_project_mode)
+        } else {
+            None
+        },
+    };
+    (!metadata.is_empty()).then_some(metadata)
+}
+
+fn github_project_sync_requested(parsed: &SubmitArgs) -> bool {
+    parsed.github_project_id.is_some()
+        || parsed.github_project_url.is_some()
+        || parsed.github_project_item_id.is_some()
+        || parsed.github_project_owner_kind.is_some()
+        || parsed.github_project_owner.is_some()
+        || parsed.github_project_number.is_some()
+}
+
+fn github_project_sync_config(parsed: &SubmitArgs) -> CanopusResult<GitHubProjectSyncConfig> {
+    let project_owner_kind = match parsed.github_project_owner_kind.as_deref() {
+        Some(value) if !value.trim().is_empty() => Some(ProjectOwnerKind::parse(value)?),
+        _ => None,
+    };
+
+    Ok(GitHubProjectSyncConfig {
+        mode: parsed.github_project_mode,
+        project_id: parsed.github_project_id.clone(),
+        project_url: parsed.github_project_url.clone(),
+        project_owner_kind,
+        project_owner: parsed.github_project_owner.clone(),
+        project_number: parsed.github_project_number,
+        repo_owner: parsed.github_owner.clone(),
+        repo_name: parsed.github_repo.clone(),
+        issue_number: parsed.github_issue_number,
+        project_item_id: parsed.github_project_item_id.clone(),
+        status_field_id: parsed.github_project_status_field_id.clone(),
+        status_field_name: parsed.github_project_status_field_name.clone(),
+        status_option_id: parsed.github_project_status_option_id.clone(),
+        status_option_name: parsed.github_project_status_option_name.clone(),
+        status: parsed.github_project_status.clone(),
+    })
+}
+
+fn github_project_gates_from_env() -> GitHubProjectGates {
+    GitHubProjectGates {
+        enable_github: env_flag("CANOPUS_ENABLE_GITHUB"),
+        enable_live_mutations: env_flag("CANOPUS_ENABLE_LIVE_MUTATIONS"),
+        allow_project_mutation: env_flag("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION"),
+    }
 }
 
 fn selected_runtime() -> CanopusResult<Box<dyn AgentRuntime>> {
@@ -813,6 +1146,25 @@ fn env_flag(name: &str) -> bool {
         std::env::var(name).as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
     )
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_u64(name: &str) -> CanopusResult<Option<u64>> {
+    env_non_empty(name)
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                CanopusError::InvalidInput(format!(
+                    "{name} must be a positive integer when configured"
+                ))
+            })
+        })
+        .transpose()
 }
 
 fn notify_discord(message: &str) {

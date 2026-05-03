@@ -46,8 +46,16 @@ Canopus should keep all externally visible or destructive actions behind explici
 ### Dry-run and live gaps
 
 - Local validation uses the deterministic `MockAgentRuntime` and file-backed task tables.
-- GitHub issue creation is disabled unless `CANOPUS_ENABLE_GITHUB=1` and the GitHub environment variables are present.
+- GitHub issue creation is disabled unless `CANOPUS_ENABLE_GITHUB=1`, `CANOPUS_ALLOW_GITHUB_MUTATION=1`, and the GitHub environment variables are present.
 - External mutations (`git push` and `gh pr create`) are dry-run by default. Set `CANOPUS_ENABLE_LIVE_MUTATIONS=1` only in an approved live environment.
+- GitHub Project v2 has no official mutation dry-run. Canopus therefore implements an application-level Project mode:
+  - `dry-run-offline` (`DryRunOffline`): default; builds local planned GraphQL operations/artifacts only; no HTTP and no mutation.
+  - `validate-read-only` (`ValidateReadOnly`): GraphQL queries only; requires `CANOPUS_ENABLE_GITHUB=1` and a token with Project read permission such as `read:project` or equivalent GitHub App permission.
+  - `mutate-live` (`MutateLive`): Project v2 add/update mutations; requires `CANOPUS_ENABLE_GITHUB=1`, `CANOPUS_ENABLE_LIVE_MUTATIONS=1`, and `CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=1`.
+- Project sync runs only when Project identity metadata is present (`GITHUB_PROJECT_ID`, `GITHUB_PROJECT_URL`, `GITHUB_PROJECT_ITEM_ID`, or owner kind/owner/number). Setting only a mode or Status field default must not break issue-only flows.
+- `GITHUB_PROJECT_ID` means the opaque GraphQL `ProjectV2` node ID. `GITHUB_PROJECT_URL` is optional convenience metadata and may be parsed only from canonical `https://github.com/users/<owner>/projects/<number>` or `https://github.com/orgs/<owner>/projects/<number>` URLs.
+- Project Status field/option IDs are environment-specific. Prefer `GITHUB_PROJECT_STATUS_FIELD_ID` and `GITHUB_PROJECT_STATUS_OPTION_ID`; otherwise Canopus can resolve `GITHUB_PROJECT_STATUS_FIELD_NAME` (default `Status`) and `GITHUB_PROJECT_STATUS_OPTION_NAME`/`github_project_status` in read/live modes.
+- GitHub Actions `GITHUB_TOKEN` is not sufficient for GitHub Projects access; optional live smoke tests require PAT or GitHub App credentials outside CI.
 - `start-pipeline.ps1 -DryRun` validates process wiring without requiring Discord credentials, building binaries, starting long-running services, pushing branches, creating PRs, merging, deploying, or touching live credentials.
 - Current live gaps: real Discord delivery, GitHub push/PR/merge/deploy flows, live credential rotation, and production deployment remain outside automated verification.
 
@@ -60,6 +68,11 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 python3 -m py_compile apps/discord-bot/bot.py
+python3 -m unittest apps/discord-bot/test_bot_config.py
 ```
 
-Use targeted tests under `apps/canopus/tests/` for ToolGateway policy, artifact persistence, task backend mapping, and workflow transitions.
+Use targeted tests under `apps/canopus/tests/` for ToolGateway policy, artifact persistence, task backend mapping, workflow transitions, and Project v2 request planning:
+
+```bash
+cargo test -p canopus github_project
+```
