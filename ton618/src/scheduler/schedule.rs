@@ -1,13 +1,18 @@
 //! scheduler/schedule.rs
 
+#[cfg(feature = "scheduler-cron")]
 use chrono::Utc;
+#[cfg(feature = "scheduler-cron")]
 use cron::Schedule as CronExpr;
+#[cfg(feature = "scheduler-cron")]
 use std::str::FromStr;
 use std::time::Duration;
 
 pub enum Schedule {
     Fixed(Duration),
-    Cron(CronExpr),
+    #[allow(dead_code)]
+    #[cfg(feature = "scheduler-cron")]
+    Cron(Box<CronExpr>),
 }
 
 impl Schedule {
@@ -15,18 +20,22 @@ impl Schedule {
         Schedule::Fixed(interval)
     }
 
+    #[allow(dead_code)]
+    #[cfg(feature = "scheduler-cron")]
     pub fn cron(expr: &str) -> anyhow::Result<Self> {
         let cron_expr = CronExpr::from_str(expr)?;
 
-        Ok(Schedule::Cron(cron_expr))
+        Ok(Schedule::Cron(Box::new(cron_expr)))
     }
 
     pub fn next_delay(&self) -> Duration {
         match self {
             Schedule::Fixed(interval) => *interval,
+            #[cfg(feature = "scheduler-cron")]
             Schedule::Cron(expr) => {
                 let now = Utc::now();
-                expr.upcoming(Utc)
+                expr.as_ref()
+                    .upcoming(Utc)
                     .next()
                     .map(|next| {
                         let delta = next - now; // chrono::Duration

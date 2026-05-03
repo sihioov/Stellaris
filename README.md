@@ -179,3 +179,24 @@ cargo run -p ton618
 ## 📄 라이선스
 
 이 프로젝트는 MIT 라이선스 하에 배포됩니다.
+
+## Rust feature matrix
+
+The Phase 1 Rust lifecycle checks are expected to pass in three profiles:
+
+```bash
+cargo fmt --all -- --check
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace --all-features
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --no-default-features
+cargo test --workspace --no-default-features
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo build -p ton618 --no-default-features --features file-dispatch
+```
+
+`ton618` reserved modules are feature-gated: `file-dispatch` (default),
+`rabbitmq-dispatch`, `scheduler-cron`, `rdb`, and `nosql`.

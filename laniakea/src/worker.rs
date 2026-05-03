@@ -1,6 +1,6 @@
 use crate::handlers;
 use dysonsphere::{
-    db::{task_table_file::FileTaskTable, TaskTable},
+    db::{task_table_file::FileTaskTable, TaskTable, TransitionOutcome},
     error::Result,
     message::TaskMessage,
     status::TaskStatus,
@@ -31,38 +31,41 @@ pub async fn run_file_loop(table: Arc<FileTaskTable>, interval: Duration) -> Res
             match process_task(&task).await {
                 Ok(()) => {
                     match table
-                        .update_status_if_current(
+                        .transition(
                             &task.task_id,
                             TaskStatus::Dispatched,
                             TaskStatus::PendingReview,
                         )
                         .await
                     {
-                        Ok(true) => {}
-                        Ok(false) => log::warn!(
-                            "[file] skip PendingReview update for {} because status changed",
-                            task.task_id
+                        Ok(TransitionOutcome::Applied) => {}
+                        Ok(TransitionOutcome::Stale { actual }) => log::warn!(
+                            "[file] skip PendingReview update for {} because status changed (actual={:?})",
+                            task.task_id,
+                            actual
                         ),
                         Err(e) => log::error!(
-                            "[file] update_status_if_current(PendingReview) failed for {}: {e}",
+                            "[file] transition(PendingReview) failed for {}: {e}",
                             task.task_id
                         ),
                     }
                 }
                 Err(e) => {
                     log::error!("[file] handler error for {}: {e}", task.task_id);
-                    if let Err(ue) = table
-                        .update_status_if_current(
-                            &task.task_id,
-                            TaskStatus::Dispatched,
-                            TaskStatus::Failed,
-                        )
+                    match table
+                        .transition(&task.task_id, TaskStatus::Dispatched, TaskStatus::Failed)
                         .await
                     {
-                        log::error!(
-                            "[file] update_status_if_current(Failed) failed for {}: {ue}",
+                        Ok(TransitionOutcome::Applied) => {}
+                        Ok(TransitionOutcome::Stale { actual }) => log::warn!(
+                            "[file] skip Failed update for {} because status changed (actual={:?})",
+                            task.task_id,
+                            actual
+                        ),
+                        Err(ue) => log::error!(
+                            "[file] transition(Failed) failed for {}: {ue}",
                             task.task_id
-                        );
+                        ),
                     }
                 }
             }

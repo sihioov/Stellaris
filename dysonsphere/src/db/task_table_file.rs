@@ -1,4 +1,4 @@
-use crate::db::task_table::TaskTable;
+use crate::db::task_table::{TaskTable, TransitionOutcome};
 use crate::error::{Result, StellarisError};
 use crate::message::TaskMessage;
 use crate::status::TaskStatus;
@@ -87,7 +87,7 @@ impl TaskTable for FileTaskTable {
     async fn create(&self, task: TaskMessage) -> Result<()> {
         self.modify(|tasks| {
             if tasks.iter().any(|t| t.task_id == task.task_id) {
-                return Err(StellarisError::DefaultError);
+                return Err(StellarisError::DuplicateTask(task.task_id.clone()));
             }
             tasks.push(task);
             Ok(())
@@ -99,41 +99,38 @@ impl TaskTable for FileTaskTable {
         Ok(tasks.into_iter().find(|t| t.task_id == task_id))
     }
 
+    async fn transition(
+        &self,
+        task_id: &str,
+        expected: TaskStatus,
+        next: TaskStatus,
+    ) -> Result<TransitionOutcome> {
+        let mut outcome = TransitionOutcome::Applied;
+        self.modify(
+            |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
+                Some(t) if t.meta.status == expected => {
+                    t.transition_to(next, Utc::now())?;
+                    Ok(())
+                }
+                Some(t) => {
+                    outcome = TransitionOutcome::Stale {
+                        actual: t.meta.status.clone(),
+                    };
+                    Ok(())
+                }
+                None => Err(StellarisError::TaskNotFound(task_id.to_string())),
+            },
+        )?;
+        Ok(outcome)
+    }
+
     async fn update_status(&self, task_id: &str, status: TaskStatus) -> Result<()> {
         self.modify(
             |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
-                Some(t) => {
-                    let now = Utc::now();
-                    t.meta.status = status;
-                    t.meta.updated_at = now;
-                    Ok(())
-                }
-                None => Err(StellarisError::DefaultError),
+                Some(t) => t.transition_to(status, Utc::now()),
+                None => Err(StellarisError::TaskNotFound(task_id.to_string())),
             },
         )
-    }
-
-    async fn update_status_if_current(
-        &self,
-        task_id: &str,
-        current: TaskStatus,
-        next: TaskStatus,
-    ) -> Result<bool> {
-        let mut updated = false;
-        self.modify(
-            |tasks| match tasks.iter_mut().find(|t| t.task_id == task_id) {
-                Some(t) if t.meta.status == current => {
-                    let now = Utc::now();
-                    t.meta.status = next;
-                    t.meta.updated_at = now;
-                    updated = true;
-                    Ok(())
-                }
-                Some(_) => Ok(()),
-                None => Err(StellarisError::DefaultError),
-            },
-        )?;
-        Ok(updated)
     }
 
     async fn delete(&self, task_id: &str) -> Result<()> {
@@ -141,7 +138,7 @@ impl TaskTable for FileTaskTable {
             let initial_len = tasks.len();
             tasks.retain(|t| t.task_id != task_id);
             if tasks.len() == initial_len {
-                Err(StellarisError::DefaultError)
+                Err(StellarisError::TaskNotFound(task_id.to_string()))
             } else {
                 Ok(())
             }
@@ -178,6 +175,14 @@ mod tests {
     use super::*;
     use crate::message::{TaskMeta, TaskType};
 
+    fn unique_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "dysonsphere-{name}-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
     fn task(id: &str, status: TaskStatus) -> TaskMessage {
         TaskMessage {
             task_id: id.to_string(),
@@ -191,59 +196,137 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_if_current_does_not_resurrect_changed_tasks() {
-        let path = std::env::temp_dir().join(format!(
-            "dysonsphere-cas-status-{}.json",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
-        let table = FileTaskTable::new(path.clone());
-        table
-            .create(task("T1", TaskStatus::Dispatched))
-            .await
-            .unwrap();
-
-        assert!(table
-            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::PendingReview)
-            .await
-            .unwrap());
-        assert!(!table
-            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::Failed)
-            .await
-            .unwrap());
-        let stored = table.fetch("T1").await.unwrap().unwrap();
-        assert_eq!(stored.meta.status, TaskStatus::PendingReview);
-        let _ = fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn update_status_bumps_updated_at() {
-        let path = std::env::temp_dir().join(format!(
-            "dysonsphere-update-status-ts-{}.json",
-            std::process::id()
-        ));
+    async fn create_returns_duplicate_task_when_id_collision() {
+        let path = unique_path("duplicate-task");
         let _ = fs::remove_file(&path);
         let table = FileTaskTable::new(path.clone());
         table.create(task("T1", TaskStatus::Pending)).await.unwrap();
-        let before = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
 
-        table
-            .update_status("T1", TaskStatus::Dispatched)
+        let err = table
+            .create(task("T1", TaskStatus::Pending))
             .await
-            .unwrap();
+            .unwrap_err();
 
-        let stored = table.fetch("T1").await.unwrap().unwrap();
-        assert_eq!(stored.meta.status, TaskStatus::Dispatched);
-        assert!(stored.meta.updated_at > before);
+        assert!(matches!(err, StellarisError::DuplicateTask(_)));
         let _ = fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn update_status_if_current_bumps_updated_at_only_on_success() {
-        let path = std::env::temp_dir().join(format!(
-            "dysonsphere-cas-status-ts-{}.json",
-            std::process::id()
+    async fn update_status_returns_task_not_found_for_missing_id() {
+        let path = unique_path("update-missing");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+
+        #[allow(deprecated)]
+        let err = table
+            .update_status("missing", TaskStatus::Dispatched)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, StellarisError::TaskNotFound(_)));
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn transition_returns_task_not_found_for_missing_id() {
+        let path = unique_path("transition-missing");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+
+        let err = table
+            .transition("missing", TaskStatus::Pending, TaskStatus::Dispatched)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, StellarisError::TaskNotFound(_)));
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn delete_returns_task_not_found_for_missing_id() {
+        let path = unique_path("delete-missing");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+
+        let err = table.delete("missing").await.unwrap_err();
+
+        assert!(matches!(err, StellarisError::TaskNotFound(_)));
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn transition_returns_applied_when_expected_matches() {
+        let path = unique_path("transition-applied");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table
+            .create(task("T1", TaskStatus::Dispatched))
+            .await
+            .unwrap();
+
+        let outcome = table
+            .transition("T1", TaskStatus::Dispatched, TaskStatus::PendingReview)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, TransitionOutcome::Applied);
+        assert_eq!(
+            table.fetch("T1").await.unwrap().unwrap().meta.status,
+            TaskStatus::PendingReview
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn transition_returns_stale_with_actual_when_expected_mismatches() {
+        let path = unique_path("transition-stale");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table
+            .create(task("T1", TaskStatus::PendingReview))
+            .await
+            .unwrap();
+
+        let outcome = table
+            .transition("T1", TaskStatus::Dispatched, TaskStatus::Failed)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            TransitionOutcome::Stale {
+                actual: TaskStatus::PendingReview
+            }
+        );
+        assert_eq!(
+            table.fetch("T1").await.unwrap().unwrap().meta.status,
+            TaskStatus::PendingReview
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn transition_returns_invalid_transition_for_illegal_matrix_step() {
+        let path = unique_path("transition-invalid");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table.create(task("T1", TaskStatus::Pending)).await.unwrap();
+
+        let err = table
+            .transition("T1", TaskStatus::Pending, TaskStatus::Processed)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StellarisError::InvalidStatusTransition { .. }
         ));
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn transition_bumps_updated_at_only_on_applied() {
+        let path = unique_path("transition-ts-applied");
         let _ = fs::remove_file(&path);
         let table = FileTaskTable::new(path.clone());
         table
@@ -252,20 +335,36 @@ mod tests {
             .unwrap();
         let before = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
 
-        assert!(table
-            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::PendingReview)
+        let outcome = table
+            .transition("T1", TaskStatus::Dispatched, TaskStatus::PendingReview)
             .await
-            .unwrap());
-        let after_success = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
-        assert!(after_success > before);
+            .unwrap();
+        let after = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
 
-        assert!(!table
-            .update_status_if_current("T1", TaskStatus::Dispatched, TaskStatus::Failed)
+        assert_eq!(outcome, TransitionOutcome::Applied);
+        assert!(after > before);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn transition_does_not_bump_updated_at_on_stale() {
+        let path = unique_path("transition-ts-stale");
+        let _ = fs::remove_file(&path);
+        let table = FileTaskTable::new(path.clone());
+        table
+            .create(task("T1", TaskStatus::PendingReview))
             .await
-            .unwrap());
-        let after_stale = table.fetch("T1").await.unwrap().unwrap();
-        assert_eq!(after_stale.meta.status, TaskStatus::PendingReview);
-        assert_eq!(after_stale.meta.updated_at, after_success);
+            .unwrap();
+        let before = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
+
+        let outcome = table
+            .transition("T1", TaskStatus::Dispatched, TaskStatus::Failed)
+            .await
+            .unwrap();
+        let after = table.fetch("T1").await.unwrap().unwrap().meta.updated_at;
+
+        assert!(matches!(outcome, TransitionOutcome::Stale { .. }));
+        assert_eq!(after, before);
         let _ = fs::remove_file(path);
     }
 }

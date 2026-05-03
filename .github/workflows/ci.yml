@@ -5,9 +5,19 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: Rust workspace and Discord bot checks
+  rust:
+    name: Rust (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: default
+            args: ""
+          - profile: all-features
+            args: "--all-features"
+          - profile: no-default-features
+            args: "--no-default-features"
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -22,11 +32,29 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run Rust tests
-        run: cargo test --workspace
+      - name: Build workspace
+        run: cargo build --workspace ${{ matrix.args }}
 
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace ${{ matrix.args }}
+
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets ${{ matrix.args }} -- -D warnings
+
+      - name: Build ton618 file-dispatch without defaults
+        if: matrix.profile == 'no-default-features'
+        run: cargo build -p ton618 --no-default-features --features file-dispatch
+
+      - name: Test ton618 file-dispatch without defaults
+        if: matrix.profile == 'no-default-features'
+        run: cargo test -p ton618 --no-default-features --features file-dispatch
+
+  discord-bot:
+    name: Discord bot checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Compile Discord bot
         run: python3 -m py_compile apps/discord-bot/bot.py

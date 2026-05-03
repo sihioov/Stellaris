@@ -34,7 +34,7 @@ Hubble finding
 
 ### ralph 쪽이 더 나은 점
 
-- `update_status_if_current()`로 상태 전이를 조건부로 수행한다.
+- `transition()`로 상태 전이를 조건부로 수행한다.
   - `Pending → Dispatched`
   - `Dispatched → PendingReview / Failed`
   - 취소/반려된 작업이 뒤늦게 되살아나는 문제를 줄인다.

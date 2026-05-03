@@ -206,8 +206,6 @@ impl TaskDispatcher for RabbitMQTaskDispatcher {
 // Unit Test
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[tokio::test]
     async fn test_task_distribution() {
         // TODO: 작업 유형 기반 분배 전략 테스트

@@ -1,5 +1,6 @@
 use crate::datasource::TaskDataSource;
 use async_trait::async_trait;
+use chrono::Utc;
 use dysonsphere::error::{Result, StellarisError};
 use dysonsphere::message::TaskMessage;
 use dysonsphere::status::TaskStatus;
@@ -85,7 +86,7 @@ impl TaskDataSource for FileDataSource {
         let mut found = false;
         for task in &mut tasks {
             if task.task_id == task_id {
-                task.meta.status = TaskStatus::Processed;
+                task.transition_to(TaskStatus::Processed, Utc::now())?;
                 found = true;
                 break;
             }
@@ -159,7 +160,7 @@ impl TaskDataSource for FileDataSource {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "file-dispatch"))]
 mod tests {
     use super::*;
     use dysonsphere::message::{TaskMeta, TaskType};
@@ -176,6 +177,54 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn mark_processed_uses_status_transition_and_updates_timestamp() {
+        let path = std::env::temp_dir().join(format!(
+            "ton618-mark-processed-transition-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let before_task = task("review", TaskStatus::PendingReview);
+        let before = before_task.meta.updated_at;
+        fs::write(&path, serde_json::to_string(&vec![before_task]).unwrap()).unwrap();
+
+        let datasource = FileDataSource::new(path.clone());
+        #[allow(deprecated)]
+        datasource.mark_processed("review").await.unwrap();
+
+        let stored = datasource.get_task("review").await.unwrap();
+        assert_eq!(stored.meta.status, TaskStatus::Processed);
+        assert!(stored.meta.updated_at > before);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn mark_processed_rejects_invalid_status_transition() {
+        let path = std::env::temp_dir().join(format!(
+            "ton618-mark-processed-invalid-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            serde_json::to_string(&vec![task("pending", TaskStatus::Pending)]).unwrap(),
+        )
+        .unwrap();
+
+        let datasource = FileDataSource::new(path.clone());
+        #[allow(deprecated)]
+        let err = datasource.mark_processed("pending").await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            StellarisError::InvalidStatusTransition { .. }
+        ));
+        assert_eq!(
+            datasource.get_task("pending").await.unwrap().meta.status,
+            TaskStatus::Pending
+        );
+        let _ = fs::remove_file(path);
+    }
     #[tokio::test]
     async fn fetch_pending_excludes_proposals_and_non_pending_statuses() {
         let path =

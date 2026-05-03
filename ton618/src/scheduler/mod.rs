@@ -7,6 +7,12 @@ pub mod schedule;
 // Re-export for convenience
 pub use schedule::Schedule;
 
-mod job;
-mod queue;
-mod runner;
+#[allow(dead_code)]
+#[cfg(feature = "scheduler-cron")]
+pub mod job;
+#[allow(dead_code)]
+#[cfg(feature = "scheduler-cron")]
+pub mod queue;
+#[allow(dead_code)]
+#[cfg(feature = "scheduler-cron")]
+pub mod runner;

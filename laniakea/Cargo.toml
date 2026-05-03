@@ -23,4 +23,4 @@ dotenvy = "0.15"
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "time", "test-util"] }
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "time", "test-util", "sync"] }

@@ -41,7 +41,7 @@
 
 ### 2.2 상태 전이 — CAS 단일화
 
-- `dysonsphere::FileTaskTable::update_status_if_current(id, expected, next) -> Result<bool>`
+- `dysonsphere::FileTaskTable::transition(id, expected, next) -> Result<TransitionOutcome>`
 - 호출 위치:
   - `ton618`: `Pending → Dispatched`
   - `laniakea` (성공): `Dispatched → PendingReview`
@@ -110,7 +110,7 @@
 
 | §11 항목 | 방어 위치 |
 |---|---|
-| 1. Pipeline 외부 상태 전이 | `update_status_if_current` (모든 worker/scheduler) |
+| 1. Pipeline 외부 상태 전이 | `transition` (모든 worker/scheduler) |
 | 2. ToolGateway 직접 우회 | `check_policy` + `find_git_subcommand` |
 | 3. Deny 반환 무시 | global flag 정규화 + 단위 테스트 (`policy_rejects_dangerous_git_commands`) |
 | 4. !approve 없는 PR | `watch`가 `Processed`만 pick (기존 로직 유지) |
