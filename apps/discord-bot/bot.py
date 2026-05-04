@@ -24,74 +24,106 @@ Commands:
 
 Authorization: set ALLOWED_USER_IDS=123456789,987654321 in env to restrict access.
 """
-import asyncio
+import importlib
 import json
 import os
-import shlex
-import tempfile
 import uuid
-from contextlib import contextmanager
-from urllib.parse import quote
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows/dev fallback
-    fcntl = None
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
-from datetime import datetime, timezone
 
-load_dotenv()
+import config as _config
+import payloads as _payloads
+import projects_store as _projects_store
+import tasks_store as _tasks_store
+import canopus_client as _canopus_client
 
-DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-PROJECTS_JSON_PATH = os.environ.get(
-    "PROJECTS_JSON_PATH",
-    os.path.join(os.path.dirname(__file__), "projects.json"),
+_config = importlib.reload(_config)
+_payloads = importlib.reload(_payloads)
+_projects_store = importlib.reload(_projects_store)
+_tasks_store = importlib.reload(_tasks_store)
+_canopus_client = importlib.reload(_canopus_client)
+
+from canopus_client import (
+    ASK_COMMAND,
+    CANOPUS_COMMAND,
+    CANOPUS_STATE_PATH,
+    intake_github_work,
+    mark_proposal_intake_failed,
+    promote_pending_proposal_with_intake,
+    register_github_project,
+    run_ask_backend,
+    run_canopus_json,
 )
-TASKS_DIR = os.environ.get("TASKS_DIR", os.path.dirname(__file__))
-TASKS_JSON_PATH = os.environ.get("TASKS_JSON_PATH", "").strip()
-CANOPUS_STATE_PATH = os.environ.get("CANOPUS_STATE_PATH")
-CANOPUS_COMMAND = os.environ.get("CANOPUS_COMMAND", "canopus").strip()
-ASK_COMMAND = os.environ.get("ASK_COMMAND", "").strip()
-GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "").strip()
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()
-GITHUB_PROJECT_ID = os.environ.get("GITHUB_PROJECT_ID", "").strip()
-GITHUB_PROJECT_URL = os.environ.get("GITHUB_PROJECT_URL", "").strip()
-GITHUB_PROJECT_OWNER_KIND = os.environ.get("GITHUB_PROJECT_OWNER_KIND", "").strip()
-GITHUB_PROJECT_OWNER = os.environ.get("GITHUB_PROJECT_OWNER", "").strip()
-GITHUB_PROJECT_NUMBER = os.environ.get("GITHUB_PROJECT_NUMBER", "").strip()
-GITHUB_PROJECT_STATUS_FIELD_ID = os.environ.get("GITHUB_PROJECT_STATUS_FIELD_ID", "").strip()
-GITHUB_PROJECT_STATUS_FIELD_NAME = os.environ.get("GITHUB_PROJECT_STATUS_FIELD_NAME", "").strip()
-GITHUB_PROJECT_STATUS_OPTION_ID = os.environ.get("GITHUB_PROJECT_STATUS_OPTION_ID", "").strip()
-GITHUB_PROJECT_STATUS_OPTION_NAME = os.environ.get("GITHUB_PROJECT_STATUS_OPTION_NAME", "").strip()
-CANOPUS_GITHUB_PROJECT_MODE = os.environ.get("CANOPUS_GITHUB_PROJECT_MODE", "").strip()
-NON_MUTATING_GITHUB_PROJECT_MODES = {"dry-run-offline", "validate-read-only"}
+from config import (
+    ALLOWED_USER_IDS,
+    ASK_MAX_OUTPUT_CHARS,
+    ASK_TIMEOUT_SECONDS,
+    CHANNEL_TYPE_MAP,
+    DISCORD_BOT_TOKEN,
+    ICON_MAP,
+    NON_MUTATING_GITHUB_PROJECT_MODES,
+    env_int,
+    get_channel_type,
+    is_authorized,
+)
+from payloads import (
+    _artifact_lookup_ids,
+    _artifact_paths,
+    _payload_data,
+    build_discord_message_link,
+    build_task_payload,
+    canopus_github_project_mode_metadata,
+    github_issue_create_url,
+    github_repo_slug,
+    mark_task_approved,
+    mark_task_rejected,
+    now_iso,
+    truncate_text,
+)
+from projects_store import merge_project_registration, parse_github_registration_flags
+from tasks_store import (
+    _read_tasks_unlocked,
+    _write_tasks_unlocked,
+    append_task_locked,
+    find_single_task_locked,
+    lock_path_for,
+    read_tasks,
+    task_file_lock,
+    update_task_status_locked,
+    write_tasks,
+)
+
+PROJECTS_JSON_PATH = _projects_store.PROJECTS_JSON_PATH
+TASKS_DIR = _projects_store.TASKS_DIR
+TASKS_JSON_PATH = _projects_store.TASKS_JSON_PATH
 
 
-def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    try:
-        value = int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
-    return max(minimum, min(maximum, value))
+def _sync_project_paths() -> None:
+    _projects_store.PROJECTS_JSON_PATH = PROJECTS_JSON_PATH
+    _projects_store.TASKS_DIR = TASKS_DIR
+    _projects_store.TASKS_JSON_PATH = TASKS_JSON_PATH
 
 
-ASK_TIMEOUT_SECONDS = env_int("ASK_TIMEOUT_SECONDS", 30, 1, 300)
-ASK_MAX_OUTPUT_CHARS = env_int("ASK_MAX_OUTPUT_CHARS", 1800, 200, 1800)
+def read_projects() -> dict:
+    _sync_project_paths()
+    return _projects_store.read_projects()
 
-_raw_ids = os.environ.get("ALLOWED_USER_IDS", "")
-ALLOWED_USER_IDS: set = {
-    int(uid.strip()) for uid in _raw_ids.split(",") if uid.strip().isdigit()
-}
 
-CHANNEL_TYPE_MAP = {
-    "planning": "canopus.planner",
-    "development": "canopus.agent",
-    "review": "canopus.reviewer",
-    "general": None,
-}
+def write_projects(data: dict) -> None:
+    _sync_project_paths()
+    _projects_store.write_projects(data)
+
+
+def get_project(category_id: int) -> dict | None:
+    _sync_project_paths()
+    return _projects_store.get_project(category_id)
+
+
+def get_tasks_path(category_id: int) -> str:
+    _sync_project_paths()
+    return _projects_store.get_tasks_path(category_id)
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -99,512 +131,8 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-ICON_MAP = {
-    "Pending": "⏳",
-    "Dispatched": "🚀",
-    "PendingReview": "🔍",
-    "Processed": "✅",
-    "Failed": "❌",
-    "PendingProposal": "📝",
-}
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def read_projects() -> dict:
-    if not os.path.exists(PROJECTS_JSON_PATH):
-        return {"projects": {}}
-    try:
-        with open(PROJECTS_JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {"projects": {}}
-
-
-def write_projects(data: dict) -> None:
-    dir_path = os.path.dirname(os.path.abspath(PROJECTS_JSON_PATH))
-    os.makedirs(dir_path, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=dir_path, delete=False, suffix=".tmp"
-    ) as tmp:
-        json.dump(data, tmp, ensure_ascii=False, indent=2)
-        tmp_path = tmp.name
-    os.replace(tmp_path, PROJECTS_JSON_PATH)
-
-
-def get_project(category_id: int) -> dict | None:
-    data = read_projects()
-    return data["projects"].get(str(category_id))
-
-
-def get_tasks_path(category_id: int) -> str:
-    if TASKS_JSON_PATH:
-        return os.path.abspath(os.path.expanduser(TASKS_JSON_PATH))
-    return os.path.join(TASKS_DIR, f"tasks-{category_id}.json")
-
-
-def github_repo_slug() -> str | None:
-    if GITHUB_OWNER and GITHUB_REPO:
-        return f"{GITHUB_OWNER}/{GITHUB_REPO}"
-    return None
-
-
-def github_issue_create_url(title: str) -> str | None:
-    slug = github_repo_slug()
-    if not slug:
-        return None
-    return f"https://github.com/{slug}/issues/new?title={quote(title)}"
-
-
-def canopus_github_project_mode_metadata() -> str | None:
-    """Return only non-mutating Project modes for Discord-originated task metadata."""
-    mode = CANOPUS_GITHUB_PROJECT_MODE
-    if mode in NON_MUTATING_GITHUB_PROJECT_MODES:
-        return mode
-    return None
-
-
-def build_discord_message_link(ctx) -> str | None:
-    if not getattr(ctx, "guild", None):
-        return None
-    return f"https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{ctx.message.id}"
-
-
-def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str, work_intake: dict | None = None) -> dict:
-    agenda_id = f"agenda-{task_id}"
-    title = truncate_text(request.replace("\n", " "), 90)
-    payload = {
-        "request": request,
-        "repo_path": project["repo_path"],
-        "task_id": task_id,
-        "agenda_id": agenda_id,
-        "canopus_agenda_id": agenda_id,
-        "role_mode": {
-            "canopus.planner": "plan",
-            "canopus.agent": "full",
-            "canopus.reviewer": "review",
-        }.get(channel_type, "full"),
-        "github_owner": project.get("github_owner") or GITHUB_OWNER or None,
-        "github_repo": project.get("github_repo") or GITHUB_REPO or None,
-        "github_repo_slug": github_repo_slug(),
-        "github_issue_number": None,
-        "github_issue_url": None,
-        "github_issue_create_url": github_issue_create_url(title),
-        "github_project_id": project.get("github_project_id") or GITHUB_PROJECT_ID or None,
-        "github_project_url": project.get("github_project_url") or GITHUB_PROJECT_URL or None,
-        "github_project_item_id": None,
-        "github_project_status": "Pending",
-        "github_project_owner_kind": project.get("github_project_owner_kind") or GITHUB_PROJECT_OWNER_KIND or None,
-        "github_project_owner": project.get("github_project_owner") or GITHUB_PROJECT_OWNER or None,
-        "github_project_number": str(project.get("github_project_number") or GITHUB_PROJECT_NUMBER) if (project.get("github_project_number") or GITHUB_PROJECT_NUMBER) else None,
-        "github_project_status_field_id": GITHUB_PROJECT_STATUS_FIELD_ID or None,
-        "github_project_status_field_name": GITHUB_PROJECT_STATUS_FIELD_NAME or None,
-        "github_project_status_option_id": GITHUB_PROJECT_STATUS_OPTION_ID or None,
-        "github_project_status_option_name": GITHUB_PROJECT_STATUS_OPTION_NAME or None,
-        "github_project_mode": canopus_github_project_mode_metadata(),
-        "discord_channel_id": str(ctx.channel.id),
-        "discord_message_id": str(ctx.message.id),
-        "discord_message_url": build_discord_message_link(ctx),
-        "confirmation_state": "requested",
-        "approval_state": "pending",
-        "approved_at": None,
-        "rejected_at": None,
-        "finalize_requested_at": None,
-    }
-    if work_intake:
-        payload.update({k: v for k, v in work_intake.items() if k.startswith("github_") and v is not None})
-    return {k: v for k, v in payload.items() if v is not None}
-
-
-
-def parse_github_registration_flags(text: str) -> tuple[str, dict | None, str | None]:
-    try:
-        parts = shlex.split(text, posix=os.name != "nt")
-    except ValueError as exc:
-        return text, None, f"GitHub 옵션 파싱 실패: {exc}"
-    repo_parts = []
-    opts = {"create_github_repo": False}
-    index = 0
-    while index < len(parts):
-        part = parts[index]
-        if part == "--github":
-            index += 1
-            if index >= len(parts) or "/" not in parts[index]:
-                return text, None, "--github 값은 owner/repo 형식이어야 합니다."
-            owner, repo = parts[index].split("/", 1)
-            opts["github_owner"] = owner
-            opts["github_repo"] = repo
-        elif part == "--project-owner":
-            index += 1
-            if index >= len(parts) or ":" not in parts[index]:
-                return text, None, "--project-owner 값은 org:name 또는 user:name 형식이어야 합니다."
-            kind, owner = parts[index].split(":", 1)
-            opts["github_project_owner_kind"] = kind
-            opts["github_project_owner"] = owner
-        elif part == "--create-github-repo":
-            opts["create_github_repo"] = True
-        else:
-            repo_parts.append(part)
-        index += 1
-    github_keys = {"github_owner", "github_repo", "github_project_owner_kind", "github_project_owner"}
-    github_opts = opts if any(k in opts for k in github_keys) else None
-    if github_opts and not github_keys.issubset(github_opts):
-        return " ".join(repo_parts), None, "GitHub 등록에는 --github owner/repo 와 --project-owner org:name|user:name 이 모두 필요합니다."
-    return " ".join(repo_parts), github_opts, None
-
-
-def merge_project_registration(base: dict, registration: dict) -> dict:
-    merged = dict(base)
-    for key, value in registration.items():
-        if key.startswith("github_") or key in {"repo_path", "name"}:
-            merged[key] = value
-    return merged
-
-
-async def run_canopus_json(args: list[str]) -> tuple[dict | None, str | None]:
-    if not CANOPUS_COMMAND:
-        return None, "CANOPUS_COMMAND is not configured"
-    try:
-        argv = shlex.split(CANOPUS_COMMAND, posix=os.name != "nt") + args
-    except ValueError as exc:
-        return None, f"CANOPUS_COMMAND 파싱 실패: {exc}"
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    out = stdout.decode(errors="replace").strip()
-    err = stderr.decode(errors="replace").strip()
-    if proc.returncode != 0:
-        return None, err or out or f"canopus exited {proc.returncode}"
-    try:
-        parsed = json.loads(out)
-    except json.JSONDecodeError as exc:
-        return None, f"Canopus JSON 파싱 실패: {exc}: {out[:200]}"
-    if not isinstance(parsed, dict):
-        return None, "Canopus 응답이 JSON object가 아닙니다."
-    return parsed, None
-
-
-async def register_github_project(repo_path: str, github_opts: dict | None) -> tuple[dict | None, str | None]:
-    if not github_opts:
-        return None, None
-    args = [
-        "project-register",
-        "--repo", repo_path,
-        "--github-owner", github_opts["github_owner"],
-        "--github-repo", github_opts["github_repo"],
-        "--project-owner-kind", github_opts["github_project_owner_kind"],
-        "--project-owner", github_opts["github_project_owner"],
-        "--json",
-    ]
-    if github_opts.get("create_github_repo"):
-        args.append("--create-github-repo")
-    return await run_canopus_json(args)
-
-
-async def intake_github_work(project: dict, task_id: str, agenda_id: str, request: str, message_url: str | None) -> tuple[dict | None, str | None]:
-    if not project.get("github_project_id"):
-        return None, None
-    args = [
-        "work-intake",
-        "--repo", project["repo_path"],
-        "--registration", json.dumps(project, ensure_ascii=False),
-        "--task-id", task_id,
-        "--agenda-id", agenda_id,
-        "--request", request,
-        "--json",
-    ]
-    if message_url:
-        args.extend(["--discord-message-url", message_url])
-    return await run_canopus_json(args)
-
-
-def mark_proposal_intake_failed(task: dict, error: str) -> None:
-    payload = _payload_data(task)
-    payload["proposal_intake_state"] = "failed"
-    payload["proposal_intake_error"] = truncate_text(error, 300)
-    payload["proposal_intake_failed_step"] = "work_intake"
-    payload["proposal_intake_attempted_at"] = now_iso()
-    task["payload"] = json.dumps(payload, ensure_ascii=False)
-    task.setdefault("meta", {})["proposal_intake_state"] = "failed"
-    task["meta"]["proposal_intake_error"] = payload["proposal_intake_error"]
-
-
-def promote_pending_proposal_with_intake(task: dict, intake: dict | None) -> None:
-    payload = _payload_data(task)
-    if intake:
-        payload.update({k: v for k, v in intake.items() if k.startswith("github_") and v is not None})
-        payload["proposal_intake_state"] = "succeeded"
-        payload["proposal_intake_attempted_at"] = now_iso()
-    task["payload"] = json.dumps(payload, ensure_ascii=False)
-    task.setdefault("meta", {})["proposal_intake_state"] = payload.get("proposal_intake_state", "not_required")
-
-def get_channel_type(channel_name: str) -> str | None:
-    name = channel_name.lower().strip()
-    return CHANNEL_TYPE_MAP.get(name)
-
-
-
-def lock_path_for(path: str) -> str:
-    root, ext = os.path.splitext(path)
-    return f"{root}.lock" if ext else f"{path}.lock"
-
-
-@contextmanager
-def task_file_lock(path: str, exclusive: bool):
-    lock_path = lock_path_for(path)
-    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_file:
-        if fcntl is not None:
-            lock_mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-            fcntl.flock(lock_file.fileno(), lock_mode)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-def _read_tasks_unlocked(path: str) -> list:
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, IOError):
-        return []
-
-
-def _write_tasks_unlocked(tasks: list, path: str) -> None:
-    dir_path = os.path.dirname(os.path.abspath(path))
-    os.makedirs(dir_path, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=dir_path, delete=False, suffix=".tmp"
-    ) as tmp:
-        json.dump(tasks, tmp, ensure_ascii=False, indent=2)
-        tmp_path = tmp.name
-    os.replace(tmp_path, path)
-
-
-def read_tasks(path: str) -> list:
-    with task_file_lock(path, exclusive=False):
-        return _read_tasks_unlocked(path)
-
-
-def write_tasks(tasks: list, path: str) -> None:
-    with task_file_lock(path, exclusive=True):
-        _write_tasks_unlocked(tasks, path)
-
-
-
-def append_task_locked(path: str, task: dict) -> None:
-    with task_file_lock(path, exclusive=True):
-        tasks = _read_tasks_unlocked(path)
-        tasks.append(task)
-        _write_tasks_unlocked(tasks, path)
-
-
-def update_task_status_locked(
-    path: str,
-    task_id: str | None,
-    command: str,
-    statuses: set[str],
-    label: str,
-    next_status: str,
-    mutate=None,
-) -> tuple[dict | None, str | None]:
-    with task_file_lock(path, exclusive=True):
-        tasks = _read_tasks_unlocked(path)
-        candidates = [t for t in tasks if t.get("meta", {}).get("status") in statuses]
-        if task_id:
-            target = next((t for t in tasks if t.get("task_id") == task_id), None)
-            if not target:
-                return None, f"⚠️ Task `{task_id}` 를 찾을 수 없습니다."
-            current = target.get("meta", {}).get("status", "?")
-            if current not in statuses:
-                return None, f"⚠️ Task `{task_id}` 는 {label} 상태가 아닙니다 (현재: {current})."
-        else:
-            if not candidates:
-                return None, f"⚠️ {label} 상태의 태스크가 없습니다."
-            if len(candidates) > 1:
-                ids = ", ".join(f"`{t['task_id']}`" for t in candidates)
-                return None, f"⚠️ 여러 태스크가 대상입니다: {ids}\n`!{command} <task_id>` 로 지정해주세요."
-            target = candidates[0]
-
-        target.setdefault("meta", {})["status"] = next_status
-        target["meta"]["updated_at"] = now_iso()
-        if mutate is not None:
-            mutate(target)
-        snapshot = json.loads(json.dumps(target))
-        _write_tasks_unlocked(tasks, path)
-        return snapshot, None
-
-
-def find_single_task_locked(
-    path: str,
-    task_id: str | None,
-    command: str,
-    statuses: set[str],
-    label: str,
-) -> tuple[dict | None, str | None]:
-    with task_file_lock(path, exclusive=False):
-        tasks = _read_tasks_unlocked(path)
-        candidates = [t for t in tasks if t.get("meta", {}).get("status") in statuses]
-        if task_id:
-            target = next((t for t in tasks if t.get("task_id") == task_id), None)
-            if not target:
-                return None, f"⚠️ Task `{task_id}` 를 찾을 수 없습니다."
-            current = target.get("meta", {}).get("status", "?")
-            if current not in statuses:
-                return None, f"⚠️ Task `{task_id}` 는 {label} 상태가 아닙니다 (현재: {current})."
-            return json.loads(json.dumps(target)), None
-        if not candidates:
-            return None, f"⚠️ {label} 상태의 태스크가 없습니다."
-        if len(candidates) > 1:
-            ids = ", ".join(f"`{t['task_id']}`" for t in candidates)
-            return None, f"⚠️ 여러 태스크가 대상입니다: {ids}\n`!{command} <task_id>` 로 지정해주세요."
-        return json.loads(json.dumps(candidates[0])), None
-
-def is_authorized(ctx) -> bool:
-    if not ALLOWED_USER_IDS:
-        return True
-    return ctx.author.id in ALLOWED_USER_IDS
-
-
-def truncate_text(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 20)].rstrip() + "\n…(truncated)"
-
-
-async def run_ask_backend(question: str) -> tuple[str | None, str | None]:
-    """Run the configured direct-answer backend without touching the task queue."""
-    if not ASK_COMMAND:
-        return None, (
-            "⚠️ `!ask` 답변 백엔드가 설정되지 않았습니다.\n"
-            "`ASK_COMMAND` 환경변수에 질문을 stdin으로 받는 명령을 설정해주세요."
-        )
-
-    try:
-        argv = shlex.split(ASK_COMMAND, posix=os.name != "nt")
-    except ValueError as exc:
-        return None, f"⚠️ `ASK_COMMAND` 파싱 실패: {exc}"
-    if not argv:
-        return None, "⚠️ `ASK_COMMAND`가 비어 있습니다."
-
-    env = os.environ.copy()
-    env["STELLARIS_ASK_PROMPT"] = question
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-    except FileNotFoundError:
-        return None, f"⚠️ `ASK_COMMAND` 실행 파일을 찾을 수 없습니다: `{argv[0]}`"
-    except OSError as exc:
-        return None, f"⚠️ `ASK_COMMAND` 실행 실패: {exc}"
-
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(question.encode("utf-8")),
-            timeout=ASK_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return None, f"⏱️ `!ask` 시간이 초과되었습니다 ({ASK_TIMEOUT_SECONDS}s)."
-
-    out = stdout.decode("utf-8", errors="replace").strip()
-    err = stderr.decode("utf-8", errors="replace").strip()
-    if proc.returncode != 0:
-        details = truncate_text(err or out or "no output", 700)
-        return None, f"❌ `ASK_COMMAND` 실패(exit {proc.returncode}):\n```text\n{details}\n```"
-    if not out:
-        return None, "⚠️ `ASK_COMMAND`가 빈 답변을 반환했습니다."
-    return truncate_text(out, ASK_MAX_OUTPUT_CHARS), None
-
-
-
-def _payload_data(task: dict) -> dict:
-    payload = task.get("payload", "")
-    if isinstance(payload, dict):
-        return payload
-    try:
-        parsed = json.loads(payload)
-        return parsed if isinstance(parsed, dict) else {"raw": payload}
-    except (json.JSONDecodeError, TypeError):
-        if isinstance(payload, str):
-            kv = {}
-            for line in payload.splitlines():
-                if "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if key:
-                    kv[key] = value.strip()
-            if kv:
-                kv["raw"] = payload
-                return kv
-        return {"raw": payload}
-
-
-def _artifact_lookup_ids(task: dict, payload: dict) -> list[str]:
-    ids = []
-
-    def add(value) -> None:
-        if value is None:
-            return
-        value = str(value).strip()
-        if value and value not in ids:
-            ids.append(value)
-
-    add(task.get("task_id"))
-    for key in (
-        "agenda_id",
-        "canopus_agenda_id",
-        "run_id",
-        "artifact_task_id",
-        "backend_id",
-        "task_id",
-    ):
-        add(payload.get(key))
-    return ids
-
-
-def _artifact_paths(project: dict | None, task: dict) -> list[str]:
-    state_root = CANOPUS_STATE_PATH
-    if not state_root and project:
-        state_root = os.path.join(project.get("repo_path", ""), ".canopus")
-    if not state_root:
-        return []
-
-    payload = _payload_data(task)
-    candidates = []
-    for lookup_id in _artifact_lookup_ids(task, payload):
-        candidates.extend([
-            os.path.join(state_root, "artifacts", lookup_id),
-            os.path.join(state_root, "runs", f"{lookup_id}.json"),
-        ])
-    found = []
-    for path in candidates:
-        if os.path.isdir(path):
-            for root, _, files in os.walk(path):
-                for name in files:
-                    found_path = os.path.join(root, name)
-                    if found_path not in found:
-                        found.append(found_path)
-        elif os.path.exists(path) and path not in found:
-            found.append(path)
-    return found[:10]
 
 def get_category_context(ctx):
     """Returns (category_id, project, tasks_path) or (None, None, None) if not in a project channel."""
