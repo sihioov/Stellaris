@@ -50,14 +50,14 @@ jobs:
         run: cargo test -p ton618 --no-default-features --features file-dispatch
 
   discord-bot:
-    name: Discord bot checks
+    name: Europa checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Compile Discord bot
-        run: python3 -m py_compile apps/discord-bot/bot.py
+        run: python3 -m py_compile apps/europa/bot.py
 
       - name: Run Discord bot config tests
-        run: python3 -m unittest apps/discord-bot/test_bot_config.py
+        run: python3 -m unittest apps/europa/test_bot_config.py

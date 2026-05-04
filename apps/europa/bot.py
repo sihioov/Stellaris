@@ -148,14 +148,14 @@ def get_category_context(ctx):
 
 @bot.event
 async def on_ready():
-    print(f"[discord-bot] Logged in as {bot.user} (id={bot.user.id})")
+    print(f"[europa] Logged in as {bot.user} (id={bot.user.id})")
     projects = read_projects()
     count = len(projects["projects"])
-    print(f"[discord-bot] {count} project(s) registered in projects.json")
+    print(f"[europa] {count} project(s) registered in projects.json")
     if ALLOWED_USER_IDS:
-        print(f"[discord-bot] Authorized user IDs: {ALLOWED_USER_IDS}")
+        print(f"[europa] Authorized user IDs: {ALLOWED_USER_IDS}")
     else:
-        print("[discord-bot] WARNING: ALLOWED_USER_IDS not set — all users can run commands")
+        print("[europa] WARNING: ALLOWED_USER_IDS not set — all users can run commands")
 
 
 # ── commands ──────────────────────────────────────────────────────────────────

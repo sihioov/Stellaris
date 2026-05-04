@@ -37,8 +37,8 @@ Keep the v1 path split across three owned lanes:
 | Lane | Owner | Responsibilities | Must not do | Regression anchors |
 |------|-------|------------------|-------------|--------------------|
 | GitHub orchestration | Canopus (`apps/canopus/`) | Interpret GitHub Issue/Project metadata, choose Project v2 mode, build read/dry-run/live plans, enforce `CANOPUS_ENABLE_GITHUB`, `CANOPUS_ENABLE_LIVE_MUTATIONS`, and mutation allow gates, and emit artifacts/finalize records. | Trust Discord or Laniakea to authorize live mutation; bypass ToolGateway policy; mutate without approval gates. | `apps/canopus/tests/github_project_v2.rs`, `apps/canopus/tests/cli_submit.rs`, `apps/canopus/tests/local_tool_gateway.rs` |
-| Discord integration | Discord bot (`apps/discord-bot/`) | Provide human commands, approval/rejection, queue writes, task links, and non-mutating GitHub metadata projection. | Push branches, create PRs, create/close issues, mutate Project v2 items, or forward `mutate-live` as Discord payload policy. | `apps/discord-bot/test_bot_config.py` |
-| Handoff and verification | Laniakea plus tests/docs | Forward task metadata to `canopus submit`, preserve upstream ids/status/timestamps, and document/test the boundary. | Add GitHub mutation allow flags or make policy decisions on behalf of Canopus. | `laniakea/src/handlers/custom.rs` tests, this document, `apps/discord-bot/README.md` |
+| Discord integration | Discord bot (`apps/europa/`) | Provide human commands, approval/rejection, queue writes, task links, and non-mutating GitHub metadata projection. | Push branches, create PRs, create/close issues, mutate Project v2 items, or forward `mutate-live` as Discord payload policy. | `apps/europa/test_bot_config.py` |
+| Handoff and verification | Laniakea plus tests/docs | Forward task metadata to `canopus submit`, preserve upstream ids/status/timestamps, and document/test the boundary. | Add GitHub mutation allow flags or make policy decisions on behalf of Canopus. | `laniakea/src/handlers/custom.rs` tests, this document, `apps/europa/README.md` |
 
 This split lets Discord remain the control surface while Canopus remains the only component that can decide whether GitHub operations are dry-run, read-only validation, or live mutation.
 
@@ -96,8 +96,8 @@ Before changing Canopus behavior, run:
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-python3 -m py_compile apps/discord-bot/bot.py
-python3 -m unittest apps/discord-bot/test_bot_config.py
+python3 -m py_compile apps/europa/bot.py
+python3 -m unittest apps/europa/test_bot_config.py
 ```
 
 Use targeted tests under `apps/canopus/tests/` for ToolGateway policy, artifact persistence, task backend mapping, workflow transitions, and Project v2 request planning:

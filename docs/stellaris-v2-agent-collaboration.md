@@ -259,7 +259,7 @@ Tasks:
 ## Migration Strategy
 
 1. Keep the current v1 task pipeline working.
-2. Extract common bot services from `apps/discord-bot/bot.py`.
+2. Extract common bot services from `apps/europa/bot.py`.
 3. Introduce GitHub agenda creation/linking before direct task creation.
 4. Add role-agent names as first-class labels, for example `planner`, `developer`, `designer`, `reviewer`, `qa`, `security`, and `writer`.
 5. Introduce lightweight room/meeting records before building a full conversation bus.

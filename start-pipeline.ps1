@@ -18,14 +18,14 @@ if (Test-Path $rootEnv) {
 
 # Shared file-backed queue: TON618 reads TASKS_JSON_PATH; Laniakea reads the same path via LANIAKEA_FILE_PATH.
 $TASKS_JSON  = Join-Path $REPO_ROOT "tasks.json"
-$BOT_ENV     = Join-Path $REPO_ROOT "apps\discord-bot\.env"
+$BOT_ENV     = Join-Path $REPO_ROOT "apps\europa\.env"
 
 # 검증
 if (-not $DryRun -and -not $env:DISCORD_WEBHOOK_URL) {
     Write-Host "❌ .env에 DISCORD_WEBHOOK_URL이 없습니다." -ForegroundColor Red; exit 1
 }
 if (-not $DryRun -and (-not (Test-Path $BOT_ENV) -or -not (Select-String -Path $BOT_ENV -Pattern "DISCORD_BOT_TOKEN=.+"))) {
-    Write-Host "❌ apps/discord-bot/.env에 DISCORD_BOT_TOKEN이 없습니다." -ForegroundColor Red; exit 1
+    Write-Host "❌ apps/europa/.env에 DISCORD_BOT_TOKEN이 없습니다." -ForegroundColor Red; exit 1
 }
 
 if ($DryRun) {
@@ -85,7 +85,7 @@ Start-Process powershell -ArgumentList @(
 # Discord Bot
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
-    "cd '$REPO_ROOT\apps\discord-bot'; `$env:TASKS_JSON_PATH='$TASKS_JSON'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; pip install -r requirements.txt -q; python bot.py"
+    "cd '$REPO_ROOT\apps\europa'; `$env:TASKS_JSON_PATH='$TASKS_JSON'; `$env:CANOPUS_STATE_PATH='$REPO_ROOT\.canopus'; pip install -r requirements.txt -q; python bot.py"
 ) -WindowStyle Normal
 
 Write-Host ""
