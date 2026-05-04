@@ -53,6 +53,7 @@ PROJECTS_JSON_PATH = os.environ.get(
 TASKS_DIR = os.environ.get("TASKS_DIR", os.path.dirname(__file__))
 TASKS_JSON_PATH = os.environ.get("TASKS_JSON_PATH", "").strip()
 CANOPUS_STATE_PATH = os.environ.get("CANOPUS_STATE_PATH")
+CANOPUS_COMMAND = os.environ.get("CANOPUS_COMMAND", "canopus").strip()
 ASK_COMMAND = os.environ.get("ASK_COMMAND", "").strip()
 GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "").strip()
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()
@@ -66,6 +67,7 @@ GITHUB_PROJECT_STATUS_FIELD_NAME = os.environ.get("GITHUB_PROJECT_STATUS_FIELD_N
 GITHUB_PROJECT_STATUS_OPTION_ID = os.environ.get("GITHUB_PROJECT_STATUS_OPTION_ID", "").strip()
 GITHUB_PROJECT_STATUS_OPTION_NAME = os.environ.get("GITHUB_PROJECT_STATUS_OPTION_NAME", "").strip()
 CANOPUS_GITHUB_PROJECT_MODE = os.environ.get("CANOPUS_GITHUB_PROJECT_MODE", "").strip()
+NON_MUTATING_GITHUB_PROJECT_MODES = {"dry-run-offline", "validate-read-only"}
 
 
 def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -158,13 +160,21 @@ def github_issue_create_url(title: str) -> str | None:
     return f"https://github.com/{slug}/issues/new?title={quote(title)}"
 
 
+def canopus_github_project_mode_metadata() -> str | None:
+    """Return only non-mutating Project modes for Discord-originated task metadata."""
+    mode = CANOPUS_GITHUB_PROJECT_MODE
+    if mode in NON_MUTATING_GITHUB_PROJECT_MODES:
+        return mode
+    return None
+
+
 def build_discord_message_link(ctx) -> str | None:
     if not getattr(ctx, "guild", None):
         return None
     return f"https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{ctx.message.id}"
 
 
-def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str) -> dict:
+def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str, work_intake: dict | None = None) -> dict:
     agenda_id = f"agenda-{task_id}"
     title = truncate_text(request.replace("\n", " "), 90)
     payload = {
@@ -178,24 +188,24 @@ def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_t
             "canopus.agent": "full",
             "canopus.reviewer": "review",
         }.get(channel_type, "full"),
-        "github_owner": GITHUB_OWNER or None,
-        "github_repo": GITHUB_REPO or None,
+        "github_owner": project.get("github_owner") or GITHUB_OWNER or None,
+        "github_repo": project.get("github_repo") or GITHUB_REPO or None,
         "github_repo_slug": github_repo_slug(),
         "github_issue_number": None,
         "github_issue_url": None,
         "github_issue_create_url": github_issue_create_url(title),
-        "github_project_id": GITHUB_PROJECT_ID or None,
-        "github_project_url": GITHUB_PROJECT_URL or None,
+        "github_project_id": project.get("github_project_id") or GITHUB_PROJECT_ID or None,
+        "github_project_url": project.get("github_project_url") or GITHUB_PROJECT_URL or None,
         "github_project_item_id": None,
         "github_project_status": "Pending",
-        "github_project_owner_kind": GITHUB_PROJECT_OWNER_KIND or None,
-        "github_project_owner": GITHUB_PROJECT_OWNER or None,
-        "github_project_number": GITHUB_PROJECT_NUMBER or None,
+        "github_project_owner_kind": project.get("github_project_owner_kind") or GITHUB_PROJECT_OWNER_KIND or None,
+        "github_project_owner": project.get("github_project_owner") or GITHUB_PROJECT_OWNER or None,
+        "github_project_number": str(project.get("github_project_number") or GITHUB_PROJECT_NUMBER) if (project.get("github_project_number") or GITHUB_PROJECT_NUMBER) else None,
         "github_project_status_field_id": GITHUB_PROJECT_STATUS_FIELD_ID or None,
         "github_project_status_field_name": GITHUB_PROJECT_STATUS_FIELD_NAME or None,
         "github_project_status_option_id": GITHUB_PROJECT_STATUS_OPTION_ID or None,
         "github_project_status_option_name": GITHUB_PROJECT_STATUS_OPTION_NAME or None,
-        "github_project_mode": CANOPUS_GITHUB_PROJECT_MODE or None,
+        "github_project_mode": canopus_github_project_mode_metadata(),
         "discord_channel_id": str(ctx.channel.id),
         "discord_message_id": str(ctx.message.id),
         "discord_message_url": build_discord_message_link(ctx),
@@ -205,8 +215,135 @@ def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_t
         "rejected_at": None,
         "finalize_requested_at": None,
     }
+    if work_intake:
+        payload.update({k: v for k, v in work_intake.items() if k.startswith("github_") and v is not None})
     return {k: v for k, v in payload.items() if v is not None}
 
+
+
+def parse_github_registration_flags(text: str) -> tuple[str, dict | None, str | None]:
+    try:
+        parts = shlex.split(text, posix=os.name != "nt")
+    except ValueError as exc:
+        return text, None, f"GitHub 옵션 파싱 실패: {exc}"
+    repo_parts = []
+    opts = {"create_github_repo": False}
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part == "--github":
+            index += 1
+            if index >= len(parts) or "/" not in parts[index]:
+                return text, None, "--github 값은 owner/repo 형식이어야 합니다."
+            owner, repo = parts[index].split("/", 1)
+            opts["github_owner"] = owner
+            opts["github_repo"] = repo
+        elif part == "--project-owner":
+            index += 1
+            if index >= len(parts) or ":" not in parts[index]:
+                return text, None, "--project-owner 값은 org:name 또는 user:name 형식이어야 합니다."
+            kind, owner = parts[index].split(":", 1)
+            opts["github_project_owner_kind"] = kind
+            opts["github_project_owner"] = owner
+        elif part == "--create-github-repo":
+            opts["create_github_repo"] = True
+        else:
+            repo_parts.append(part)
+        index += 1
+    github_keys = {"github_owner", "github_repo", "github_project_owner_kind", "github_project_owner"}
+    github_opts = opts if any(k in opts for k in github_keys) else None
+    if github_opts and not github_keys.issubset(github_opts):
+        return " ".join(repo_parts), None, "GitHub 등록에는 --github owner/repo 와 --project-owner org:name|user:name 이 모두 필요합니다."
+    return " ".join(repo_parts), github_opts, None
+
+
+def merge_project_registration(base: dict, registration: dict) -> dict:
+    merged = dict(base)
+    for key, value in registration.items():
+        if key.startswith("github_") or key in {"repo_path", "name"}:
+            merged[key] = value
+    return merged
+
+
+async def run_canopus_json(args: list[str]) -> tuple[dict | None, str | None]:
+    if not CANOPUS_COMMAND:
+        return None, "CANOPUS_COMMAND is not configured"
+    try:
+        argv = shlex.split(CANOPUS_COMMAND, posix=os.name != "nt") + args
+    except ValueError as exc:
+        return None, f"CANOPUS_COMMAND 파싱 실패: {exc}"
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    out = stdout.decode(errors="replace").strip()
+    err = stderr.decode(errors="replace").strip()
+    if proc.returncode != 0:
+        return None, err or out or f"canopus exited {proc.returncode}"
+    try:
+        parsed = json.loads(out)
+    except json.JSONDecodeError as exc:
+        return None, f"Canopus JSON 파싱 실패: {exc}: {out[:200]}"
+    if not isinstance(parsed, dict):
+        return None, "Canopus 응답이 JSON object가 아닙니다."
+    return parsed, None
+
+
+async def register_github_project(repo_path: str, github_opts: dict | None) -> tuple[dict | None, str | None]:
+    if not github_opts:
+        return None, None
+    args = [
+        "project-register",
+        "--repo", repo_path,
+        "--github-owner", github_opts["github_owner"],
+        "--github-repo", github_opts["github_repo"],
+        "--project-owner-kind", github_opts["github_project_owner_kind"],
+        "--project-owner", github_opts["github_project_owner"],
+        "--json",
+    ]
+    if github_opts.get("create_github_repo"):
+        args.append("--create-github-repo")
+    return await run_canopus_json(args)
+
+
+async def intake_github_work(project: dict, task_id: str, agenda_id: str, request: str, message_url: str | None) -> tuple[dict | None, str | None]:
+    if not project.get("github_project_id"):
+        return None, None
+    args = [
+        "work-intake",
+        "--repo", project["repo_path"],
+        "--registration", json.dumps(project, ensure_ascii=False),
+        "--task-id", task_id,
+        "--agenda-id", agenda_id,
+        "--request", request,
+        "--json",
+    ]
+    if message_url:
+        args.extend(["--discord-message-url", message_url])
+    return await run_canopus_json(args)
+
+
+def mark_proposal_intake_failed(task: dict, error: str) -> None:
+    payload = _payload_data(task)
+    payload["proposal_intake_state"] = "failed"
+    payload["proposal_intake_error"] = truncate_text(error, 300)
+    payload["proposal_intake_failed_step"] = "work_intake"
+    payload["proposal_intake_attempted_at"] = now_iso()
+    task["payload"] = json.dumps(payload, ensure_ascii=False)
+    task.setdefault("meta", {})["proposal_intake_state"] = "failed"
+    task["meta"]["proposal_intake_error"] = payload["proposal_intake_error"]
+
+
+def promote_pending_proposal_with_intake(task: dict, intake: dict | None) -> None:
+    payload = _payload_data(task)
+    if intake:
+        payload.update({k: v for k, v in intake.items() if k.startswith("github_") and v is not None})
+        payload["proposal_intake_state"] = "succeeded"
+        payload["proposal_intake_attempted_at"] = now_iso()
+    task["payload"] = json.dumps(payload, ensure_ascii=False)
+    task.setdefault("meta", {})["proposal_intake_state"] = payload.get("proposal_intake_state", "not_required")
 
 def get_channel_type(channel_name: str) -> str | None:
     name = channel_name.lower().strip()
@@ -308,6 +445,31 @@ def update_task_status_locked(
         _write_tasks_unlocked(tasks, path)
         return snapshot, None
 
+
+def find_single_task_locked(
+    path: str,
+    task_id: str | None,
+    command: str,
+    statuses: set[str],
+    label: str,
+) -> tuple[dict | None, str | None]:
+    with task_file_lock(path, exclusive=False):
+        tasks = _read_tasks_unlocked(path)
+        candidates = [t for t in tasks if t.get("meta", {}).get("status") in statuses]
+        if task_id:
+            target = next((t for t in tasks if t.get("task_id") == task_id), None)
+            if not target:
+                return None, f"⚠️ Task `{task_id}` 를 찾을 수 없습니다."
+            current = target.get("meta", {}).get("status", "?")
+            if current not in statuses:
+                return None, f"⚠️ Task `{task_id}` 는 {label} 상태가 아닙니다 (현재: {current})."
+            return json.loads(json.dumps(target)), None
+        if not candidates:
+            return None, f"⚠️ {label} 상태의 태스크가 없습니다."
+        if len(candidates) > 1:
+            ids = ", ".join(f"`{t['task_id']}`" for t in candidates)
+            return None, f"⚠️ 여러 태스크가 대상입니다: {ids}\n`!{command} <task_id>` 로 지정해주세요."
+        return json.loads(json.dumps(candidates[0])), None
 
 def is_authorized(ctx) -> bool:
     if not ALLOWED_USER_IDS:
@@ -477,7 +639,11 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
         await ctx.send("🚫 권한이 없습니다.")
         return
     if not name or not repo_path:
-        await ctx.send("사용법: `!new-project <이름> <로컬경로>`\n예: `!new-project my-app C:/projects/my-app`")
+        await ctx.send("사용법: `!new-project <이름> <로컬경로> [--github owner/repo --project-owner org:name|user:name --create-github-repo]`")
+        return
+    repo_path, github_opts, parse_error = parse_github_registration_flags(repo_path)
+    if parse_error:
+        await ctx.send(f"⚠️ {parse_error}")
         return
     if not ctx.guild:
         await ctx.send("⚠️ 서버 채널에서만 사용할 수 있습니다.")
@@ -534,13 +700,26 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
             await category.create_text_channel(ch_name)
         steps.append(f"💬 Discord 카테고리 + 4채널 생성")
 
-        # 4. projects.json 등록
+        # 4. GitHub-backed registration (when requested) and projects.json registration.
+        registration, reg_error = await register_github_project(repo_path, github_opts)
+        if reg_error:
+            if category is not None:
+                try:
+                    await category.delete(reason="GitHub registration failed before project activation")
+                    steps.append("↩️ GitHub 등록 실패로 Discord 카테고리 롤백")
+                except Exception:
+                    steps.append("⚠️ GitHub 등록 실패; 생성된 Discord 카테고리는 미등록/provisional 상태")
+            await ctx.send(f"❌ GitHub 등록 실패: {reg_error}")
+            return
         data = read_projects()
-        data["projects"][str(category.id)] = {
+        record = {
             "name": name,
             "repo_path": repo_path,
             "registered_at": now_iso(),
         }
+        if registration:
+            record = merge_project_registration(record, registration)
+        data["projects"][str(category.id)] = record
         write_projects(data)
         steps.append("📝 projects.json 등록 완료")
 
@@ -563,7 +742,11 @@ async def cmd_register(ctx, *, repo_path: str = None):
         await ctx.send("🚫 권한이 없습니다.")
         return
     if not repo_path:
-        await ctx.send("사용법: `!register <로컬경로>`\n예: `!register D:/develop/repositories/Stellaris`")
+        await ctx.send("사용법: `!register <로컬경로> [--github owner/repo --project-owner org:name|user:name]`")
+        return
+    repo_path, github_opts, parse_error = parse_github_registration_flags(repo_path)
+    if parse_error:
+        await ctx.send(f"⚠️ {parse_error}")
         return
     if not os.path.isdir(repo_path):
         await ctx.send(f"❌ 경로가 존재하지 않습니다: `{repo_path}`\n신규 프로젝트라면 `!new-project <이름> <경로>` 를 사용하세요.")
@@ -578,11 +761,18 @@ async def cmd_register(ctx, *, repo_path: str = None):
     category = ctx.channel.category
     data = read_projects()
     is_update = str(category.id) in data["projects"]
-    data["projects"][str(category.id)] = {
+    record = {
         "name": category.name,
         "repo_path": repo_path,
         "registered_at": now_iso(),
     }
+    registration, reg_error = await register_github_project(repo_path, github_opts)
+    if reg_error:
+        await ctx.send(f"❌ GitHub 등록 실패: {reg_error}")
+        return
+    if registration:
+        record = merge_project_registration(record, registration)
+    data["projects"][str(category.id)] = record
     write_projects(data)
 
     action = "업데이트됨" if is_update else "등록됨"
@@ -642,7 +832,12 @@ async def cmd_run(ctx, *, request: str = None):
 
     task_id = f"discord-{uuid.uuid4().hex[:12]}"
     ts = now_iso()
-    payload = build_task_payload(ctx, task_id, request, project, channel_type)
+    agenda_id = f"agenda-{task_id}"
+    work_intake, intake_error = await intake_github_work(project, task_id, agenda_id, request, build_discord_message_link(ctx))
+    if intake_error:
+        await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
+        return
+    payload = build_task_payload(ctx, task_id, request, project, channel_type, work_intake)
     task = {
         "task_id": task_id,
         "task_type": {"Custom": channel_type},
@@ -770,13 +965,34 @@ async def cmd_propose_approve(ctx, task_id: str = None):
         await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
         return
 
+    proposal, error = find_single_task_locked(tasks_path, task_id, "propose-approve", {"PendingProposal"}, "PendingProposal")
+    if error:
+        await ctx.send(error)
+        return
+    payload = _payload_data(proposal)
+    request = payload.get("request") or payload.get("prompt") or "Approved proposal"
+    agenda_id = payload.get("agenda_id") or payload.get("canopus_agenda_id") or f"agenda-{proposal['task_id']}"
+    work_intake, intake_error = await intake_github_work(project, proposal["task_id"], agenda_id, request, payload.get("discord_message_url"))
+    if intake_error:
+        update_task_status_locked(
+            tasks_path,
+            proposal["task_id"],
+            "propose-approve",
+            {"PendingProposal"},
+            "PendingProposal",
+            "PendingProposal",
+            lambda task: mark_proposal_intake_failed(task, intake_error),
+        )
+        await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
+        return
     target, error = update_task_status_locked(
         tasks_path,
-        task_id,
+        proposal["task_id"],
         "propose-approve",
         {"PendingProposal"},
         "PendingProposal",
         "Pending",
+        lambda task: promote_pending_proposal_with_intake(task, work_intake),
     )
     if error:
         await ctx.send(error)

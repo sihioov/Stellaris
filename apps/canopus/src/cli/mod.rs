@@ -14,6 +14,7 @@ use crate::core::{
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
 use chrono::{DateTime, Utc};
 use dysonsphere::message::TaskType;
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -25,6 +26,9 @@ pub async fn run(args: Vec<String>) -> CanopusResult<()> {
 
     match args[1].as_str() {
         "submit" => submit(&args[2..]).await,
+        "project-register" => project_register(&args[2..]),
+        "work-intake" => work_intake(&args[2..]),
+        "delivery-finalize" => delivery_finalize(&args[2..]),
         "watch" => watch(&args[2..]).await,
         "finalize" => finalize(&args[2..]).await,
         "status" => status(&args[2..]),
@@ -497,6 +501,559 @@ fn maybe_create_qa_issue(agenda: &Agenda, artifacts: &[Artifact]) -> Option<u64>
             None
         }
     }
+}
+
+fn project_register(args: &[String]) -> CanopusResult<()> {
+    let parsed = ProjectRegisterArgs::parse(args)?;
+    require_existing_repo(&parsed.repo)?;
+    require_gate("CANOPUS_ENABLE_GITHUB")?;
+    require_gate("CANOPUS_ENABLE_LIVE_MUTATIONS")?;
+    require_gate("CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION")?;
+    require_gate("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION")?;
+    if parsed.create_github_repo {
+        require_gate("CANOPUS_ALLOW_GITHUB_REPO_CREATE")?;
+    }
+    if !env_flag("CANOPUS_MOCK_GITHUB") {
+        require_token()?;
+        return Err(CanopusError::Tool(
+            "live GitHub project registration is not implemented in this offline-safe build; use CANOPUS_MOCK_GITHUB=1 in tests".to_string(),
+        ));
+    }
+
+    let owner = parsed.github_owner.clone();
+    let repo = parsed.github_repo.clone();
+    let project_number = env_u64("CANOPUS_MOCK_GITHUB_PROJECT_NUMBER")?.unwrap_or(1);
+    let home_issue_number = env_u64("CANOPUS_MOCK_GITHUB_HOME_ISSUE_NUMBER")?.unwrap_or(1);
+    let registry = ProjectRegistrationOutput {
+        name: parsed
+            .repo
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string(),
+        repo_path: parsed.repo.display().to_string(),
+        github_owner: owner.clone(),
+        github_repo: repo.clone(),
+        github_repo_url: format!("https://github.com/{owner}/{repo}"),
+        github_repo_node_id: format!("R_mock_{owner}_{repo}"),
+        github_project_id: format!("PVT_mock_{owner}_{repo}"),
+        github_project_url: format!(
+            "https://github.com/{}/{}/projects/{project_number}",
+            parsed.project_owner_kind.github_url_segment(),
+            parsed.project_owner
+        ),
+        github_project_owner_kind: parsed.project_owner_kind.as_str().to_string(),
+        github_project_owner: parsed.project_owner.clone(),
+        github_project_number: project_number,
+        github_home_issue_number: home_issue_number,
+        github_home_issue_node_id: format!("I_mock_home_{home_issue_number}"),
+        github_home_issue_url: format!(
+            "https://github.com/{owner}/{repo}/issues/{home_issue_number}"
+        ),
+        github_project_item_id: format!("PVTI_mock_home_{home_issue_number}"),
+        github_project_status_field_name: "Status".to_string(),
+        github_project_status_option_name: "Registered".to_string(),
+        github_project_status: "Registered".to_string(),
+        audit: vec![
+            "validate_repository".to_string(),
+            if parsed.create_github_repo {
+                "create_repository"
+            } else {
+                "skip_repository_create"
+            }
+            .to_string(),
+            "create_project_v2".to_string(),
+            "create_home_issue".to_string(),
+            "add_home_issue_to_project".to_string(),
+            "update_project_status".to_string(),
+        ],
+    };
+    print_json(&registry)
+}
+
+fn work_intake(args: &[String]) -> CanopusResult<()> {
+    let parsed = WorkIntakeArgs::parse(args)?;
+    require_existing_repo(&parsed.repo)?;
+    require_gate("CANOPUS_ENABLE_GITHUB")?;
+    require_gate("CANOPUS_ENABLE_LIVE_MUTATIONS")?;
+    require_gate("CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION")?;
+    require_gate("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION")?;
+    if !env_flag("CANOPUS_MOCK_GITHUB") {
+        require_token()?;
+        return Err(CanopusError::Tool(
+            "live GitHub work intake is not implemented in this offline-safe build; use CANOPUS_MOCK_GITHUB=1 in tests".to_string(),
+        ));
+    }
+
+    let registration = parsed.registration_json()?;
+    let owner = registration
+        .get("github_owner")
+        .and_then(|v| v.as_str())
+        .unwrap_or("owner");
+    let repo = registration
+        .get("github_repo")
+        .and_then(|v| v.as_str())
+        .unwrap_or("repo");
+    let project_id = registration
+        .get("github_project_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("PVT_mock_project");
+    let project_url = registration
+        .get("github_project_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let home_issue_number = registration
+        .get("github_home_issue_number")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1);
+    let issue_number = env_u64("CANOPUS_MOCK_GITHUB_WORK_ISSUE_NUMBER")?.unwrap_or(2);
+    let output = WorkIntakeOutput {
+        task_id: parsed.task_id,
+        agenda_id: parsed.agenda_id,
+        github_owner: owner.to_string(),
+        github_repo: repo.to_string(),
+        github_issue_number: issue_number,
+        github_issue_node_id: format!("I_mock_work_{issue_number}"),
+        github_issue_url: format!("https://github.com/{owner}/{repo}/issues/{issue_number}"),
+        github_home_issue_number: home_issue_number,
+        github_project_id: project_id.to_string(),
+        github_project_url: project_url.to_string(),
+        github_project_item_id: format!("PVTI_mock_work_{issue_number}"),
+        github_project_status: "Issue Created".to_string(),
+        request: parsed.request,
+        discord_message_url: parsed.discord_message_url,
+        audit: vec![
+            "create_work_issue".to_string(),
+            "link_home_issue".to_string(),
+            "add_work_issue_to_project".to_string(),
+            "update_project_status".to_string(),
+        ],
+    };
+    print_json(&output)
+}
+
+fn delivery_finalize(args: &[String]) -> CanopusResult<()> {
+    let parsed = DeliveryFinalizeArgs::parse(args)?;
+    require_existing_repo(&parsed.repo)?;
+    let report = DeliveryGateReport::from_env(
+        parsed.discord_approved,
+        parsed.github_ready,
+        parsed.merge_succeeded,
+    );
+    if !report.can_create_pr() {
+        return Err(CanopusError::InvalidInput(report.denial_reason()));
+    }
+    if parsed.merge_requested && !report.can_merge() {
+        return Err(CanopusError::InvalidInput(report.denial_reason()));
+    }
+    if parsed.deploy_required && !report.can_deploy() {
+        return Err(CanopusError::InvalidInput(report.denial_reason()));
+    }
+    print_json(&report)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectRegistrationOutput {
+    name: String,
+    repo_path: String,
+    github_owner: String,
+    github_repo: String,
+    github_repo_url: String,
+    github_repo_node_id: String,
+    github_project_id: String,
+    github_project_url: String,
+    github_project_owner_kind: String,
+    github_project_owner: String,
+    github_project_number: u64,
+    github_home_issue_number: u64,
+    github_home_issue_node_id: String,
+    github_home_issue_url: String,
+    github_project_item_id: String,
+    github_project_status_field_name: String,
+    github_project_status_option_name: String,
+    github_project_status: String,
+    audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkIntakeOutput {
+    task_id: String,
+    agenda_id: String,
+    github_owner: String,
+    github_repo: String,
+    github_issue_number: u64,
+    github_issue_node_id: String,
+    github_issue_url: String,
+    github_home_issue_number: u64,
+    github_project_id: String,
+    github_project_url: String,
+    github_project_item_id: String,
+    github_project_status: String,
+    request: String,
+    discord_message_url: Option<String>,
+    audit: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectRegisterArgs {
+    repo: PathBuf,
+    github_owner: String,
+    github_repo: String,
+    project_owner_kind: ProjectOwnerKind,
+    project_owner: String,
+    create_github_repo: bool,
+}
+
+impl ProjectRegisterArgs {
+    fn parse(args: &[String]) -> CanopusResult<Self> {
+        let mut repo = None;
+        let mut github_owner = None;
+        let mut github_repo = None;
+        let mut project_owner_kind = None;
+        let mut project_owner = None;
+        let mut create_github_repo = false;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--repo" => {
+                    index += 1;
+                    repo = Some(PathBuf::from(required_value(args, index, "--repo")?));
+                }
+                "--github-owner" => {
+                    index += 1;
+                    github_owner = Some(required_value(args, index, "--github-owner")?.to_string());
+                }
+                "--github-repo" => {
+                    index += 1;
+                    github_repo = Some(required_value(args, index, "--github-repo")?.to_string());
+                }
+                "--project-owner-kind" => {
+                    index += 1;
+                    project_owner_kind = Some(ProjectOwnerKind::parse(required_value(
+                        args,
+                        index,
+                        "--project-owner-kind",
+                    )?)?);
+                }
+                "--project-owner" => {
+                    index += 1;
+                    project_owner =
+                        Some(required_value(args, index, "--project-owner")?.to_string());
+                }
+                "--create-github-repo" => create_github_repo = true,
+                "--json" => {}
+                value => {
+                    return Err(CanopusError::InvalidInput(format!(
+                        "unknown project-register argument: {value}"
+                    )))
+                }
+            }
+            index += 1;
+        }
+        Ok(Self {
+            repo: repo.ok_or_else(|| {
+                CanopusError::InvalidInput("project-register requires --repo".to_string())
+            })?,
+            github_owner: github_owner.ok_or_else(|| {
+                CanopusError::InvalidInput("project-register requires --github-owner".to_string())
+            })?,
+            github_repo: github_repo.ok_or_else(|| {
+                CanopusError::InvalidInput("project-register requires --github-repo".to_string())
+            })?,
+            project_owner_kind: project_owner_kind.ok_or_else(|| {
+                CanopusError::InvalidInput(
+                    "project-register requires --project-owner-kind".to_string(),
+                )
+            })?,
+            project_owner: project_owner.ok_or_else(|| {
+                CanopusError::InvalidInput("project-register requires --project-owner".to_string())
+            })?,
+            create_github_repo,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WorkIntakeArgs {
+    repo: PathBuf,
+    registration: String,
+    task_id: String,
+    agenda_id: String,
+    request: String,
+    discord_message_url: Option<String>,
+}
+
+impl WorkIntakeArgs {
+    fn parse(args: &[String]) -> CanopusResult<Self> {
+        let mut repo = None;
+        let mut registration = None;
+        let mut task_id = None;
+        let mut agenda_id = None;
+        let mut request = None;
+        let mut discord_message_url = None;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--repo" => {
+                    index += 1;
+                    repo = Some(PathBuf::from(required_value(args, index, "--repo")?));
+                }
+                "--registration" => {
+                    index += 1;
+                    registration = Some(required_value(args, index, "--registration")?.to_string());
+                }
+                "--task-id" => {
+                    index += 1;
+                    task_id = Some(required_value(args, index, "--task-id")?.to_string());
+                }
+                "--agenda-id" => {
+                    index += 1;
+                    agenda_id = Some(required_value(args, index, "--agenda-id")?.to_string());
+                }
+                "--request" => {
+                    index += 1;
+                    request = Some(required_value(args, index, "--request")?.to_string());
+                }
+                "--discord-message-url" => {
+                    index += 1;
+                    discord_message_url =
+                        Some(required_value(args, index, "--discord-message-url")?.to_string());
+                }
+                "--json" => {}
+                value => {
+                    return Err(CanopusError::InvalidInput(format!(
+                        "unknown work-intake argument: {value}"
+                    )))
+                }
+            }
+            index += 1;
+        }
+        Ok(Self {
+            repo: repo.ok_or_else(|| {
+                CanopusError::InvalidInput("work-intake requires --repo".to_string())
+            })?,
+            registration: registration.ok_or_else(|| {
+                CanopusError::InvalidInput("work-intake requires --registration".to_string())
+            })?,
+            task_id: task_id.ok_or_else(|| {
+                CanopusError::InvalidInput("work-intake requires --task-id".to_string())
+            })?,
+            agenda_id: agenda_id.ok_or_else(|| {
+                CanopusError::InvalidInput("work-intake requires --agenda-id".to_string())
+            })?,
+            request: request.ok_or_else(|| {
+                CanopusError::InvalidInput("work-intake requires --request".to_string())
+            })?,
+            discord_message_url,
+        })
+    }
+
+    fn registration_json(&self) -> CanopusResult<serde_json::Map<String, serde_json::Value>> {
+        let value = if self.registration.trim_start().starts_with('{') {
+            serde_json::from_str::<serde_json::Value>(&self.registration)
+        } else {
+            let text = fs::read_to_string(&self.registration)?;
+            serde_json::from_str::<serde_json::Value>(&text)
+        }
+        .map_err(|e| CanopusError::InvalidInput(format!("invalid registration JSON: {e}")))?;
+        value.as_object().cloned().ok_or_else(|| {
+            CanopusError::InvalidInput("registration JSON must be an object".to_string())
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryFinalizeArgs {
+    repo: PathBuf,
+    discord_approved: bool,
+    github_ready: bool,
+    merge_requested: bool,
+    merge_succeeded: bool,
+    deploy_required: bool,
+}
+
+impl DeliveryFinalizeArgs {
+    fn parse(args: &[String]) -> CanopusResult<Self> {
+        let mut repo = PathBuf::from(".");
+        let mut discord_approved = false;
+        let mut github_ready = false;
+        let mut merge_requested = false;
+        let mut merge_succeeded = false;
+        let mut deploy_required = false;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--repo" => {
+                    index += 1;
+                    repo = PathBuf::from(required_value(args, index, "--repo")?);
+                }
+                "--discord-approved" => discord_approved = true,
+                "--github-ready" => github_ready = true,
+                "--merge" => merge_requested = true,
+                "--merge-succeeded" => merge_succeeded = true,
+                "--deploy-required" => deploy_required = true,
+                "--json" => {}
+                value => {
+                    return Err(CanopusError::InvalidInput(format!(
+                        "unknown delivery-finalize argument: {value}"
+                    )))
+                }
+            }
+            index += 1;
+        }
+        Ok(Self {
+            repo,
+            discord_approved,
+            github_ready,
+            merge_requested,
+            merge_succeeded,
+            deploy_required,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DeliveryGateReport {
+    discord_approved: bool,
+    github_ready: bool,
+    pr_gate_enabled: bool,
+    merge_gate_enabled: bool,
+    deploy_gate_enabled: bool,
+    deploy_configured: bool,
+    merge_succeeded: bool,
+    status: String,
+    denial_reasons: Vec<String>,
+}
+
+impl DeliveryGateReport {
+    fn from_env(discord_approved: bool, github_ready: bool, merge_succeeded: bool) -> Self {
+        let pr_gate_enabled = env_flag("CANOPUS_ALLOW_GITHUB_PR_MUTATION");
+        let merge_gate_enabled = env_flag("CANOPUS_ALLOW_GITHUB_MERGE");
+        let deploy_gate_enabled = env_flag("CANOPUS_ALLOW_DEPLOY");
+        let deploy_configured = env_non_empty("CANOPUS_DEPLOY_ADAPTER").is_some()
+            && env_non_empty("CANOPUS_DEPLOY_ENVIRONMENT").is_some()
+            && env_non_empty("CANOPUS_DEPLOY_COMMAND").is_some();
+        let mut report = Self {
+            discord_approved,
+            github_ready,
+            pr_gate_enabled,
+            merge_gate_enabled,
+            deploy_gate_enabled,
+            deploy_configured,
+            merge_succeeded,
+            status: "Ready".to_string(),
+            denial_reasons: Vec::new(),
+        };
+        if !pr_gate_enabled {
+            report
+                .denial_reasons
+                .push("CANOPUS_ALLOW_GITHUB_PR_MUTATION=1 required".to_string());
+        }
+        if !discord_approved {
+            report
+                .denial_reasons
+                .push("Discord approval missing".to_string());
+        }
+        if !github_ready {
+            report
+                .denial_reasons
+                .push("GitHub checks/reviews/branch protection not ready".to_string());
+        }
+        if !merge_gate_enabled {
+            report
+                .denial_reasons
+                .push("CANOPUS_ALLOW_GITHUB_MERGE=1 required".to_string());
+        }
+        if !deploy_gate_enabled {
+            report
+                .denial_reasons
+                .push("CANOPUS_ALLOW_DEPLOY=1 required".to_string());
+        }
+        if !deploy_configured {
+            report
+                .denial_reasons
+                .push("explicit deploy adapter/environment/command required".to_string());
+        }
+        if !merge_succeeded {
+            report
+                .denial_reasons
+                .push("merge must succeed before deploy".to_string());
+        }
+        report.status = if report.denial_reasons.is_empty() {
+            "Allowed"
+        } else {
+            "Denied"
+        }
+        .to_string();
+        report
+    }
+
+    fn can_create_pr(&self) -> bool {
+        self.pr_gate_enabled
+    }
+    fn can_merge(&self) -> bool {
+        self.pr_gate_enabled
+            && self.discord_approved
+            && self.github_ready
+            && self.merge_gate_enabled
+    }
+    fn can_deploy(&self) -> bool {
+        self.can_merge()
+            && self.merge_succeeded
+            && self.deploy_gate_enabled
+            && self.deploy_configured
+    }
+    fn denial_reason(&self) -> String {
+        self.denial_reasons.join("; ")
+    }
+}
+
+impl ProjectOwnerKind {
+    fn github_url_segment(self) -> &'static str {
+        match self {
+            ProjectOwnerKind::Org => "orgs",
+            ProjectOwnerKind::User => "users",
+        }
+    }
+}
+
+fn require_existing_repo(repo: &Path) -> CanopusResult<()> {
+    if !repo.is_dir() {
+        return Err(CanopusError::InvalidInput(format!(
+            "repo path does not exist: {}",
+            repo.display()
+        )));
+    }
+    if !repo.join(".git").is_dir() {
+        return Err(CanopusError::InvalidInput(format!(
+            "repo path is not a git repository: {}",
+            repo.display()
+        )));
+    }
+    Ok(())
+}
+
+fn require_gate(name: &str) -> CanopusResult<()> {
+    if env_flag(name) {
+        Ok(())
+    } else {
+        Err(CanopusError::InvalidInput(format!(
+            "{name}=1 required before GitHub-backed delivery mutation"
+        )))
+    }
+}
+
+fn require_token() -> CanopusResult<()> {
+    env_non_empty("GITHUB_TOKEN").map(|_| ()).ok_or_else(|| {
+        CanopusError::InvalidInput("GITHUB_TOKEN required for live GitHub mutation".to_string())
+    })
+}
+
+fn print_json<T: Serialize>(value: &T) -> CanopusResult<()> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| CanopusError::Runtime(format!("serialize JSON: {e}")))?;
+    println!("{text}");
+    Ok(())
 }
 
 async fn watch(args: &[String]) -> CanopusResult<()> {
@@ -1385,13 +1942,32 @@ fn parse_task_type(value: &str) -> CanopusResult<TaskType> {
 }
 
 fn usage() -> String {
-    "usage: canopus submit [--repo <path>] [--state <path>] [--agenda-id <id>] [--task-type <type>] <request> | canopus watch [--repo <path>] [--state <path>] [--once] [tasks-path] | canopus finalize [--repo <path>] [--state <path>] (--agenda-id <id>|--task-id <id>)".to_string()
+    "usage: canopus submit [--repo <path>] [--state <path>] [--agenda-id <id>] [--task-type <type>] <request> | canopus project-register --repo <path> --github-owner <owner> --github-repo <repo> --project-owner-kind <org|user> --project-owner <owner> [--create-github-repo] --json | canopus work-intake --repo <path> --registration <json-or-path> --task-id <id> --agenda-id <id> --request <text> --json | canopus delivery-finalize [--repo <path>] [--discord-approved] [--github-ready] [--merge] [--deploy-required] --json | canopus watch [--repo <path>] [--state <path>] [--once] [tasks-path] | canopus finalize [--repo <path>] [--state <path>] (--agenda-id <id>|--task-id <id>)".to_string()
 }
 
 #[cfg(test)]
 mod post_approval_tests {
     use super::*;
     use std::process::Command;
+
+    fn clear_canopus_env() {
+        for key in [
+            "CANOPUS_ENABLE_GITHUB",
+            "CANOPUS_ENABLE_LIVE_MUTATIONS",
+            "CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION",
+            "CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION",
+            "CANOPUS_ALLOW_GITHUB_REPO_CREATE",
+            "CANOPUS_MOCK_GITHUB",
+            "CANOPUS_ALLOW_GITHUB_PR_MUTATION",
+            "CANOPUS_ALLOW_GITHUB_MERGE",
+            "CANOPUS_ALLOW_DEPLOY",
+            "CANOPUS_DEPLOY_ADAPTER",
+            "CANOPUS_DEPLOY_ENVIRONMENT",
+            "CANOPUS_DEPLOY_COMMAND",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
 
     fn git_repo(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("canopus-{name}-{}", std::process::id()));
@@ -1429,7 +2005,9 @@ mod post_approval_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn post_approval_uses_dry_run_for_external_mutations_by_default() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
         std::env::remove_var("CANOPUS_ENABLE_LIVE_MUTATIONS");
         std::env::remove_var("GITHUB_TOKEN");
         std::env::remove_var("GITHUB_OWNER");
@@ -1457,5 +2035,145 @@ mod post_approval_tests {
             .unwrap();
         assert!(!String::from_utf8_lossy(&log.stdout).contains("CANOPUS-DRY"));
         let _ = fs::remove_dir_all(repo);
+    }
+    #[test]
+    fn project_register_fails_closed_without_live_gates() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CANOPUS_ENABLE_GITHUB");
+        std::env::remove_var("CANOPUS_ENABLE_LIVE_MUTATIONS");
+        std::env::remove_var("CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION");
+        std::env::remove_var("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION");
+        let repo = git_repo("project-register-gates");
+        let args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--github-owner".to_string(),
+            "acme".to_string(),
+            "--github-repo".to_string(),
+            "demo".to_string(),
+            "--project-owner-kind".to_string(),
+            "org".to_string(),
+            "--project-owner".to_string(),
+            "acme".to_string(),
+            "--json".to_string(),
+        ];
+
+        let err = project_register(&args).unwrap_err();
+
+        assert!(err.to_string().contains("CANOPUS_ENABLE_GITHUB=1"));
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn project_register_repo_create_requires_explicit_gate() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
+        std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION", "1");
+        std::env::remove_var("CANOPUS_ALLOW_GITHUB_REPO_CREATE");
+        let repo = git_repo("project-register-repo-create-gate");
+        let args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--github-owner".to_string(),
+            "acme".to_string(),
+            "--github-repo".to_string(),
+            "demo".to_string(),
+            "--project-owner-kind".to_string(),
+            "org".to_string(),
+            "--project-owner".to_string(),
+            "acme".to_string(),
+            "--create-github-repo".to_string(),
+            "--json".to_string(),
+        ];
+
+        let err = project_register(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("CANOPUS_ALLOW_GITHUB_REPO_CREATE=1"));
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn mock_project_register_and_work_intake_succeed_offline() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
+        std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION", "1");
+        std::env::set_var("CANOPUS_MOCK_GITHUB", "1");
+        let repo = git_repo("project-register-mock-success");
+        let register_args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--github-owner".to_string(),
+            "acme".to_string(),
+            "--github-repo".to_string(),
+            "demo".to_string(),
+            "--project-owner-kind".to_string(),
+            "org".to_string(),
+            "--project-owner".to_string(),
+            "acme".to_string(),
+            "--json".to_string(),
+        ];
+
+        project_register(&register_args).unwrap();
+
+        let registration = serde_json::json!({
+            "github_owner":"acme",
+            "github_repo":"demo",
+            "github_project_id":"PVT_mock_acme_demo",
+            "github_project_url":"https://github.com/orgs/acme/projects/1",
+            "github_home_issue_number":1
+        })
+        .to_string();
+        let intake_args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--registration".to_string(),
+            registration,
+            "--task-id".to_string(),
+            "discord-1".to_string(),
+            "--agenda-id".to_string(),
+            "agenda-discord-1".to_string(),
+            "--request".to_string(),
+            "ship it".to_string(),
+            "--discord-message-url".to_string(),
+            "https://discord.test/msg".to_string(),
+            "--json".to_string(),
+        ];
+        work_intake(&intake_args).unwrap();
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn delivery_gate_denies_merge_and_deploy_until_all_gates_pass() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::remove_var("CANOPUS_ALLOW_GITHUB_PR_MUTATION");
+        std::env::remove_var("CANOPUS_ALLOW_GITHUB_MERGE");
+        std::env::remove_var("CANOPUS_ALLOW_DEPLOY");
+        std::env::remove_var("CANOPUS_DEPLOY_ADAPTER");
+        std::env::remove_var("CANOPUS_DEPLOY_ENVIRONMENT");
+        std::env::remove_var("CANOPUS_DEPLOY_COMMAND");
+        let denied = DeliveryGateReport::from_env(false, false, false);
+        assert!(!denied.can_merge());
+        assert!(!denied.can_deploy());
+        assert!(denied.denial_reason().contains("Discord approval missing"));
+
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_PR_MUTATION", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_MERGE", "1");
+        std::env::set_var("CANOPUS_ALLOW_DEPLOY", "1");
+        std::env::set_var("CANOPUS_DEPLOY_ADAPTER", "command");
+        std::env::set_var("CANOPUS_DEPLOY_ENVIRONMENT", "staging");
+        std::env::set_var("CANOPUS_DEPLOY_COMMAND", "echo deploy");
+        let allowed = DeliveryGateReport::from_env(true, true, true);
+        assert!(allowed.can_merge());
+        assert!(allowed.can_deploy());
+        clear_canopus_env();
     }
 }

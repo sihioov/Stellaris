@@ -363,6 +363,7 @@ mod tests {
 
     #[test]
     fn dry_runs_external_mutations_by_default() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
         std::env::remove_var("CANOPUS_ENABLE_LIVE_MUTATIONS");
         let repo = std::env::temp_dir().join(format!("canopus-dry-run-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&repo);

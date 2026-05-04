@@ -454,7 +454,33 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--github-project-mode", "dry-run-offline"]));
+        assert!(!args.iter().any(|arg| arg == "--allow-github-mutation"));
+        assert!(!args.iter().any(|arg| arg == "--allow-mutation"));
         assert_eq!(args.last().unwrap(), "fix routed bug");
+    }
+
+    #[test]
+    fn canopus_handoff_does_not_invent_live_mutation_authority() {
+        let payload = serde_json::json!({
+            "request": "keep policy in canopus",
+            "agenda_id": "AGENDA-8",
+            "github_project_id": "PVT_project",
+            "github_project_item_id": "PVTI_existing",
+            "github_project_mode": "validate-read-only"
+        })
+        .to_string();
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--github-project-mode", "validate-read-only"]));
+        assert!(!args.iter().any(|arg| arg == "--allow-github-mutation"));
+        assert!(!args.iter().any(|arg| arg == "--allow-mutation"));
     }
 
     #[test]

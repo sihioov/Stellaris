@@ -115,6 +115,32 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertEqual(payload["discord_message_url"], "https://discord.com/channels/1/2/3")
         self.assertEqual(payload["confirmation_state"], "requested")
 
+
+    def test_task_payload_omits_mutating_project_mode_from_discord_metadata(self):
+        bot = load_bot(
+            GITHUB_OWNER="acme",
+            GITHUB_REPO="demo",
+            GITHUB_PROJECT_ID="PVT_kwDOdemo",
+            CANOPUS_GITHUB_PROJECT_MODE="mutate-live",
+        )
+        ctx = types.SimpleNamespace(
+            guild=types.SimpleNamespace(id=1),
+            channel=types.SimpleNamespace(id=2),
+            message=types.SimpleNamespace(id=3),
+        )
+
+        payload = bot.build_task_payload(
+            ctx,
+            "discord-abc123",
+            "Ship agenda metadata",
+            {"repo_path": "/repo"},
+            "canopus.agent",
+        )
+
+        self.assertNotIn("github_project_mode", payload)
+        self.assertIsNone(payload.get("github_issue_number"))
+        self.assertIsNone(payload.get("github_issue_url"))
+
     def test_approval_hook_updates_payload_and_finalize_signal(self):
         bot = load_bot()
         with tempfile.TemporaryDirectory() as tmp:
@@ -149,3 +175,100 @@ class DiscordBotConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_register_github_project_uses_canopus_json_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_canopus.py"
+            script.write_text(
+                "import json, sys\n"
+                "assert sys.argv[1] == 'project-register'\n"
+                "print(json.dumps({'github_owner':'acme','github_repo':'demo','github_project_id':'PVT_1','github_home_issue_url':'https://github.test/i/1'}))\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(CANOPUS_COMMAND=f"{sys.executable} {script}")
+            result, error = await bot.register_github_project(
+                "/repo",
+                {
+                    "github_owner": "acme",
+                    "github_repo": "demo",
+                    "github_project_owner_kind": "org",
+                    "github_project_owner": "acme",
+                    "create_github_repo": False,
+                },
+            )
+            self.assertIsNone(error)
+            self.assertEqual(result["github_project_id"], "PVT_1")
+
+    async def test_run_work_intake_failure_does_not_append_task(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot.PROJECTS_JSON_PATH = str(projects_path)
+            bot.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo", "github_project_id": "PVT_1"}}})
+
+            async def fail_intake(*args, **kwargs):
+                return None, "mock intake failed"
+
+            bot.intake_github_work = fail_intake
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(
+                        id=2,
+                        name="development",
+                        category=types.SimpleNamespace(id=10),
+                    )
+                    self.message = types.SimpleNamespace(id=3)
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_run(ctx, request="ship")
+            self.assertFalse(tasks_path.exists())
+            self.assertTrue(any("work-intake 실패" in msg for msg in ctx.sent))
+
+    async def test_propose_approve_intake_failure_keeps_pending_proposal(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot.PROJECTS_JSON_PATH = str(projects_path)
+            bot.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo", "github_project_id": "PVT_1"}}})
+            task = {
+                "task_id": "discord-proposal",
+                "payload": json.dumps({"request": "candidate", "agenda_id": "agenda-discord-proposal"}),
+                "meta": {"status": "PendingProposal"},
+            }
+            tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+
+            async def fail_intake(*args, **kwargs):
+                return None, "mock intake failed"
+
+            bot.intake_github_work = fail_intake
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(id=2, name="development", category=types.SimpleNamespace(id=10))
+                    self.message = types.SimpleNamespace(id=3)
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_propose_approve(ctx, task_id="discord-proposal")
+            stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            self.assertEqual(stored["meta"]["status"], "PendingProposal")
+            payload = json.loads(stored["payload"])
+            self.assertEqual(payload["proposal_intake_state"], "failed")
+            self.assertTrue(any("work-intake 실패" in msg for msg in ctx.sent))
