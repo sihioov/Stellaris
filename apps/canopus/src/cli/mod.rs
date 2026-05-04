@@ -1,8 +1,8 @@
 use crate::core::{CanopusError, CanopusResult};
 
 mod args;
-pub(crate) mod commands;
-pub(crate) mod finalize;
+mod commands;
+mod finalize;
 mod submit;
 
 pub async fn run(args: Vec<String>) -> CanopusResult<()> {
