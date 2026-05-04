@@ -11,7 +11,18 @@ BOT_PATH = Path(__file__).with_name("bot.py")
 
 
 def load_bot(**env):
-    for name in ["discord", "discord.ext", "discord.ext.commands", "dotenv", "discord_bot_under_test"]:
+    for name in [
+        "discord",
+        "discord.ext",
+        "discord.ext.commands",
+        "dotenv",
+        "config",
+        "payloads",
+        "projects_store",
+        "tasks_store",
+        "canopus_client",
+        "discord_bot_under_test",
+    ]:
         sys.modules.pop(name, None)
 
     discord = types.ModuleType("discord")
@@ -205,8 +216,8 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tasks_path = Path(tmp) / "tasks.json"
             projects_path = Path(tmp) / "projects.json"
-            bot.PROJECTS_JSON_PATH = str(projects_path)
-            bot.TASKS_JSON_PATH = str(tasks_path)
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
             bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo", "github_project_id": "PVT_1"}}})
 
             async def fail_intake(*args, **kwargs):
@@ -239,8 +250,8 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tasks_path = Path(tmp) / "tasks.json"
             projects_path = Path(tmp) / "projects.json"
-            bot.PROJECTS_JSON_PATH = str(projects_path)
-            bot.TASKS_JSON_PATH = str(tasks_path)
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
             bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo", "github_project_id": "PVT_1"}}})
             task = {
                 "task_id": "discord-proposal",

@@ -24,7 +24,6 @@ Commands:
 
 Authorization: set ALLOWED_USER_IDS=123456789,987654321 in env to restrict access.
 """
-import importlib
 import json
 import os
 import uuid
@@ -32,17 +31,7 @@ import uuid
 import discord
 from discord.ext import commands
 
-import config as _config
-import payloads as _payloads
 import projects_store as _projects_store
-import tasks_store as _tasks_store
-import canopus_client as _canopus_client
-
-_config = importlib.reload(_config)
-_payloads = importlib.reload(_payloads)
-_projects_store = importlib.reload(_projects_store)
-_tasks_store = importlib.reload(_tasks_store)
-_canopus_client = importlib.reload(_canopus_client)
 
 from canopus_client import (
     ASK_COMMAND,
@@ -81,7 +70,14 @@ from payloads import (
     now_iso,
     truncate_text,
 )
-from projects_store import merge_project_registration, parse_github_registration_flags
+from projects_store import (
+    get_project,
+    get_tasks_path,
+    merge_project_registration,
+    parse_github_registration_flags,
+    read_projects,
+    write_projects,
+)
 from tasks_store import (
     _read_tasks_unlocked,
     _write_tasks_unlocked,
@@ -93,36 +89,6 @@ from tasks_store import (
     update_task_status_locked,
     write_tasks,
 )
-
-PROJECTS_JSON_PATH = _projects_store.PROJECTS_JSON_PATH
-TASKS_DIR = _projects_store.TASKS_DIR
-TASKS_JSON_PATH = _projects_store.TASKS_JSON_PATH
-
-
-def _sync_project_paths() -> None:
-    _projects_store.PROJECTS_JSON_PATH = PROJECTS_JSON_PATH
-    _projects_store.TASKS_DIR = TASKS_DIR
-    _projects_store.TASKS_JSON_PATH = TASKS_JSON_PATH
-
-
-def read_projects() -> dict:
-    _sync_project_paths()
-    return _projects_store.read_projects()
-
-
-def write_projects(data: dict) -> None:
-    _sync_project_paths()
-    _projects_store.write_projects(data)
-
-
-def get_project(category_id: int) -> dict | None:
-    _sync_project_paths()
-    return _projects_store.get_project(category_id)
-
-
-def get_tasks_path(category_id: int) -> str:
-    _sync_project_paths()
-    return _projects_store.get_tasks_path(category_id)
 
 
 intents = discord.Intents.default()
@@ -394,33 +360,6 @@ async def cmd_run(ctx, *, request: str = None):
         f"**Status**: Pending"
     )
 
-
-def mark_task_approved(task: dict) -> None:
-    ts = now_iso()
-    payload = _payload_data(task)
-    payload["confirmation_state"] = "approved"
-    payload["approval_state"] = "approved"
-    payload["approved_at"] = ts
-    payload["finalize_requested_at"] = ts
-    payload["github_project_status"] = "Approved"
-    task["payload"] = json.dumps(payload, ensure_ascii=False)
-    task.setdefault("meta", {})["confirmation_state"] = "approved"
-    task["meta"]["approval_state"] = "approved"
-    task["meta"]["approved_at"] = ts
-    task["meta"]["finalize_requested_at"] = ts
-
-
-def mark_task_rejected(task: dict) -> None:
-    ts = now_iso()
-    payload = _payload_data(task)
-    payload["confirmation_state"] = "rejected"
-    payload["approval_state"] = "rejected"
-    payload["rejected_at"] = ts
-    payload["github_project_status"] = "Rejected"
-    task["payload"] = json.dumps(payload, ensure_ascii=False)
-    task.setdefault("meta", {})["confirmation_state"] = "rejected"
-    task["meta"]["approval_state"] = "rejected"
-    task["meta"]["rejected_at"] = ts
 
 
 @bot.command(name="approve")
