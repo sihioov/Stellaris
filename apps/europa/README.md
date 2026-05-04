@@ -1,6 +1,8 @@
-# Discord Bot — Dysonsphere Pipeline Input
+# Europa — Discord control surface for canopus
 
-Discord.py 2.x bot for injecting GitHub-agenda-backed tasks into the Stellaris pipeline and approving/rejecting finalization.
+Discord-side adapter only. Long-term home: `surfaces/europa/`. Do not add
+policy logic here; route mutation to canopus. See
+`docs/architecture/boundaries.md`.
 
 ## Commands
 

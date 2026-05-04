@@ -15,6 +15,12 @@ Stellaris is a Rust workspace for distributed task processing. Core crates live 
 ## Coding Style & Naming Conventions
 Use Rust 2021 conventions, `rustfmt`, and clear module boundaries. Prefer trait-based abstractions in shared crates and keep Canopus-specific workflow logic inside `apps/canopus`. Use cosmic component names consistently: Dysonsphere for shared contracts, TON618 for scheduling, Laniakea for workers, Hubble/Kepler for discovery. Python code in `apps/europa` should stay small, explicit, and configuration-driven.
 
+## Boundaries
+Stellaris is layered Discord(UI) / Canopus(engine) / Dysonsphere(contract).
+When adding code, route policy/state mutation to canopus and keep
+surface-specific formatting out of canopus. See
+docs/architecture/boundaries.md for the full rules and migration backlog.
+
 ## Testing Guidelines
 Place Rust unit tests near the code they cover and integration tests under each crate’s `tests/` directory, e.g. `apps/canopus/tests/*.rs`. Add regression tests for status transitions, scheduler filtering, tool policy, and discovery deduplication. Run `cargo test --workspace` before committing any Rust behavior change.
 

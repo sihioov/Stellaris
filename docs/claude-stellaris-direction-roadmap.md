@@ -88,8 +88,8 @@ PendingProposal
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-python3 -m py_compile apps/discord-bot/bot.py
-python3 -m unittest apps/discord-bot/test_bot_config.py
+python3 -m py_compile apps/europa/bot.py
+python3 -m unittest apps/europa/test_bot_config.py
 ```
 
 이후 추가 검증:
