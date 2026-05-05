@@ -9,9 +9,9 @@ use crate::adapters::tool_gateway::LocalToolGateway;
 use crate::cli::args::{env_flag, SubmitArgs};
 use crate::cli::finalize::notify_discord;
 use crate::core::{
-    derive_run_identity, Agenda, AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError,
-    CanopusResult, GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode, Pipeline,
-    StageRecord, WorkflowState,
+    derive_run_identity, Agenda, AgendaSource, AgentRole, AgentTask, Artifact, ArtifactKind,
+    CanopusError, CanopusResult, GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode,
+    Pipeline, StageRecord, WorkflowState,
 };
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
 use chrono::{DateTime, Utc};
@@ -35,8 +35,7 @@ macro_rules! try_stage {
 pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
     let parsed = SubmitArgs::parse(args)?;
     // Note: changed_files excludes .canopus/ paths; --state must resolve under .canopus/ for MVP.
-    let run_id = derive_run_identity(parsed.agenda_id.as_deref(), parsed.task_id.as_deref())?;
-    let agenda = Agenda::new_with_id(&run_id, parsed.request.clone())?;
+    let agenda = derive_agenda(&parsed)?;
     let branch = format!("canopus/{}", agenda.id);
     let artifact_store = LocalFileArtifactStore::new(parsed.state.join("artifacts"));
     let backend = StellarisTaskBackend::new(parsed.state.join("tasks.json"))?;
@@ -252,6 +251,75 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
         log::info!("[submit] Q&A issue #{n} — watch/finalize may close it after approval");
     }
     Ok(())
+}
+
+/// Decide which `Agenda` constructor (and therefore which id-derivation strategy)
+/// applies to the parsed CLI arguments.
+///
+/// Priority:
+/// 1. Caller-supplied `--agenda-id`: sanitise it through `derive_run_identity`
+///    and tag the source from any GitHub identity present in the same args.
+///    Europa always passes an explicit agenda id, so this is the dominant path.
+/// 2. No `--agenda-id` but full GitHub Issue identity (`owner` + `repo` +
+///    `issue_number`): use the deterministic Issue-derived id so the same Issue
+///    re-submitted produces the same agenda id (V2 ledger idempotency).
+/// 3. No `--agenda-id` but full GitHub Project v2 item identity: use the
+///    deterministic project-item-derived id.
+/// 4. None of the above: keep the pre-existing `derive_run_identity(None, task_id)`
+///    behaviour (task-id or timestamp). The `Cli` source variant records that
+///    no external ledger identity was provided.
+fn derive_agenda(parsed: &SubmitArgs) -> CanopusResult<Agenda> {
+    if let Some(explicit) = parsed
+        .agenda_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let id = derive_run_identity(Some(explicit), parsed.task_id.as_deref())?;
+        return Agenda::new_with_source(id, parsed.request.clone(), inferred_source(parsed));
+    }
+
+    if let Some((owner, repo, number)) = github_issue_identity(parsed) {
+        return Agenda::from_github_issue(owner, repo, number, parsed.request.clone());
+    }
+
+    if let Some((project_url, item_id)) = github_project_identity(parsed) {
+        return Agenda::from_github_project(project_url, item_id, parsed.request.clone());
+    }
+
+    let id = derive_run_identity(None, parsed.task_id.as_deref())?;
+    Agenda::new_with_id(id, parsed.request.clone())
+}
+
+fn inferred_source(parsed: &SubmitArgs) -> AgendaSource {
+    if let Some((owner, repo, number)) = github_issue_identity(parsed) {
+        return AgendaSource::GitHubIssue {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            number,
+        };
+    }
+    if let Some((project_url, item_id)) = github_project_identity(parsed) {
+        return AgendaSource::GitHubProject {
+            project_url: project_url.to_string(),
+            item_id: item_id.to_string(),
+        };
+    }
+    AgendaSource::Cli
+}
+
+fn github_issue_identity(parsed: &SubmitArgs) -> Option<(&str, &str, u64)> {
+    Some((
+        parsed.github_owner.as_deref()?,
+        parsed.github_repo.as_deref()?,
+        parsed.github_issue_number?,
+    ))
+}
+
+fn github_project_identity(parsed: &SubmitArgs) -> Option<(&str, &str)> {
+    Some((
+        parsed.github_project_url.as_deref()?,
+        parsed.github_project_item_id.as_deref()?,
+    ))
 }
 
 fn stage_name_for_role(role: &AgentRole) -> &str {
@@ -675,5 +743,123 @@ fn selected_runtime() -> CanopusResult<Box<dyn AgentRuntime>> {
         Ok(value) => Err(CanopusError::InvalidInput(format!(
             "unsupported CANOPUS_AGENT_RUNTIME: {value}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn submit_args_blank(request: &str) -> SubmitArgs {
+        SubmitArgs {
+            repo: PathBuf::from("."),
+            state: PathBuf::from(".canopus"),
+            request: request.to_string(),
+            task_type: None,
+            agenda_id: None,
+            task_id: None,
+            task_status: None,
+            task_created_at: None,
+            task_updated_at: None,
+            role_mode: "standard".to_string(),
+            github_owner: None,
+            github_repo: None,
+            github_issue_number: None,
+            github_issue_url: None,
+            github_project_mode: GitHubProjectMode::DryRunOffline,
+            github_project_mode_explicit: false,
+            github_project_id: None,
+            github_project_url: None,
+            github_project_item_id: None,
+            github_project_status: None,
+            github_project_owner_kind: None,
+            github_project_owner: None,
+            github_project_number: None,
+            github_project_status_field_id: None,
+            github_project_status_field_name: None,
+            github_project_status_option_id: None,
+            github_project_status_option_name: None,
+            allow_github_mutation: false,
+        }
+    }
+
+    #[test]
+    fn derive_agenda_uses_cli_source_when_no_identity_present() {
+        let mut parsed = submit_args_blank("plain request");
+        parsed.task_id = Some("TASK-9".to_string());
+        let agenda = derive_agenda(&parsed).unwrap();
+        assert_eq!(agenda.source, AgendaSource::Cli);
+        // task-id form mirrors the legacy derive_run_identity(None, Some("TASK-9")) path.
+        assert_eq!(agenda.id, "task-9");
+    }
+
+    #[test]
+    fn derive_agenda_uses_github_issue_when_full_identity_and_no_explicit_agenda_id() {
+        let mut parsed = submit_args_blank("ship the loop");
+        parsed.github_owner = Some("Acme".to_string());
+        parsed.github_repo = Some("Demo".to_string());
+        parsed.github_issue_number = Some(42);
+        let agenda = derive_agenda(&parsed).unwrap();
+        assert_eq!(agenda.id, "gh-acme-demo-42");
+        assert_eq!(
+            agenda.source,
+            AgendaSource::GitHubIssue {
+                owner: "Acme".to_string(),
+                repo: "Demo".to_string(),
+                number: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn derive_agenda_honours_explicit_agenda_id_but_records_github_source() {
+        let mut parsed = submit_args_blank("explicit-takes-priority");
+        parsed.agenda_id = Some("custom-id".to_string());
+        parsed.github_owner = Some("acme".to_string());
+        parsed.github_repo = Some("demo".to_string());
+        parsed.github_issue_number = Some(7);
+        let agenda = derive_agenda(&parsed).unwrap();
+        assert_eq!(
+            agenda.id, "custom-id",
+            "explicit --agenda-id must win over deterministic derivation"
+        );
+        match agenda.source {
+            AgendaSource::GitHubIssue { number, .. } => assert_eq!(number, 7),
+            other => panic!("expected GitHubIssue source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_agenda_uses_github_project_when_only_project_identity_present() {
+        let mut parsed = submit_args_blank("project-only flow");
+        parsed.github_project_url = Some("https://github.com/orgs/acme/projects/1".to_string());
+        parsed.github_project_item_id = Some("PVTI_lAHO".to_string());
+        let agenda = derive_agenda(&parsed).unwrap();
+        assert!(agenda.id.starts_with("ghp-"));
+        assert_eq!(agenda.source.kind(), "github_project");
+    }
+
+    #[test]
+    fn derive_agenda_partial_github_identity_falls_back_to_cli() {
+        let mut parsed = submit_args_blank("partial identity");
+        parsed.github_owner = Some("acme".to_string());
+        // missing repo + issue number — must not be treated as deterministic identity.
+        let agenda = derive_agenda(&parsed).unwrap();
+        assert_eq!(agenda.source, AgendaSource::Cli);
+    }
+
+    #[test]
+    fn derive_agenda_is_idempotent_for_same_github_issue_identity() {
+        let mut a = submit_args_blank("first");
+        let mut b = submit_args_blank("second body, different copy");
+        for parsed in [&mut a, &mut b] {
+            parsed.github_owner = Some("Acme".to_string());
+            parsed.github_repo = Some("Demo".to_string());
+            parsed.github_issue_number = Some(101);
+        }
+        let id_a = derive_agenda(&a).unwrap().id;
+        let id_b = derive_agenda(&b).unwrap().id;
+        assert_eq!(id_a, id_b);
     }
 }
