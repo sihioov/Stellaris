@@ -4,14 +4,12 @@ use crate::cli::args::{FinalizeArgs, WatchArgs};
 use crate::cli::commands::delivery_finalize::DeliveryGateReport;
 use crate::core::{derive_run_identity, CanopusError, CanopusResult};
 use crate::ports::ToolGateway;
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
-    use dysonsphere::db::{FileTaskTable, TaskTable};
-
     let parsed = WatchArgs::parse(args)?;
-    let table = FileTaskTable::new(parsed.tasks_path.clone());
     let tools = LocalToolGateway;
     let interval = std::time::Duration::from_secs(10);
 
@@ -20,10 +18,10 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
         parsed.tasks_path.display()
     );
     loop {
-        match table.fetch_processed().await {
+        match approved_processed_tasks(&parsed.tasks_path) {
             Ok(tasks) if !tasks.is_empty() => {
                 for task in tasks {
-                    let run_id = derive_run_identity(Some(&task.task_id), None)?;
+                    let run_id = derive_run_identity(Some(&task.run_id), None)?;
                     let finalize_path = finalize_record_path(&parsed.state, &run_id);
                     if finalize_path.exists() {
                         if let Err(e) =
@@ -74,6 +72,87 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
             return Ok(());
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApprovedProcessedTask {
+    task_id: String,
+    run_id: String,
+}
+
+fn approved_processed_tasks(tasks_path: &Path) -> CanopusResult<Vec<ApprovedProcessedTask>> {
+    let text = match fs::read_to_string(tasks_path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+    let value = serde_json::from_str::<Value>(&text)
+        .map_err(|e| CanopusError::InvalidInput(format!("invalid tasks JSON: {e}")))?;
+    let tasks = value
+        .as_array()
+        .ok_or_else(|| CanopusError::InvalidInput("tasks JSON must be an array".to_string()))?;
+
+    let mut approved = Vec::new();
+    for task in tasks {
+        let Some(object) = task.as_object() else {
+            continue;
+        };
+        if object
+            .get("meta")
+            .and_then(|meta| meta.get("status"))
+            .and_then(Value::as_str)
+            != Some("Processed")
+        {
+            continue;
+        }
+        let Some(task_id) = object
+            .get("task_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(payload) = decoded_payload(object.get("payload")) else {
+            log::info!("[watch] Processed task {task_id} skipped: missing JSON payload");
+            continue;
+        };
+        if payload.get("approval_state").and_then(Value::as_str) != Some("approved") {
+            log::info!("[watch] Processed task {task_id} skipped: approval_state not approved");
+            continue;
+        }
+        let Some(finalize_requested_at) = payload
+            .get("finalize_requested_at")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            log::info!("[watch] Processed task {task_id} skipped: finalize not requested");
+            continue;
+        };
+        let _ = finalize_requested_at;
+        let run_id = payload
+            .get("agenda_id")
+            .or_else(|| payload.get("canopus_agenda_id"))
+            .or_else(|| payload.get("run_id"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(task_id)
+            .to_string();
+        approved.push(ApprovedProcessedTask {
+            task_id: task_id.to_string(),
+            run_id,
+        });
+    }
+    Ok(approved)
+}
+
+fn decoded_payload(value: Option<&Value>) -> Option<serde_json::Map<String, Value>> {
+    match value? {
+        Value::Object(object) => Some(object.clone()),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|parsed| parsed.as_object().cloned()),
+        _ => None,
     }
 }
 
@@ -259,10 +338,12 @@ mod gate_tests {
         for key in [
             "CANOPUS_ENABLE_GITHUB",
             "CANOPUS_ENABLE_LIVE_MUTATIONS",
+            "CANOPUS_ALLOW_GITHUB_MUTATION",
             "CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION",
             "CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION",
             "CANOPUS_ALLOW_GITHUB_REPO_CREATE",
             "CANOPUS_MOCK_GITHUB",
+            "CANOPUS_MOCK_GITHUB_PROJECT_SYNC_FAIL",
             "CANOPUS_ALLOW_GITHUB_PR_MUTATION",
             "CANOPUS_ALLOW_GITHUB_MERGE",
             "CANOPUS_ALLOW_DEPLOY",
@@ -408,6 +489,7 @@ mod gate_tests {
         let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
         std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
         std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_MUTATION", "1");
         std::env::set_var("CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION", "1");
         std::env::set_var("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION", "1");
         std::env::set_var("CANOPUS_MOCK_GITHUB", "1");
@@ -454,6 +536,217 @@ mod gate_tests {
         work_intake(&intake_args).unwrap();
         let _ = fs::remove_dir_all(repo);
         clear_canopus_env();
+    }
+
+    #[test]
+    fn work_intake_issue_only_mock_does_not_require_project_gate() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
+        std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_MUTATION", "1");
+        std::env::set_var("CANOPUS_MOCK_GITHUB", "1");
+        std::env::remove_var("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION");
+        let repo = git_repo("work-intake-issue-only");
+        let registration = serde_json::json!({
+            "github_owner":"acme",
+            "github_repo":"demo"
+        })
+        .to_string();
+        let intake_args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--registration".to_string(),
+            registration,
+            "--task-id".to_string(),
+            "discord-issue-only".to_string(),
+            "--agenda-id".to_string(),
+            "agenda-discord-issue-only".to_string(),
+            "--request".to_string(),
+            "create issue only".to_string(),
+            "--project-sync".to_string(),
+            "best-effort".to_string(),
+            "--json".to_string(),
+        ];
+
+        work_intake(&intake_args).unwrap();
+
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn work_intake_requires_real_owner_repo_registration() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
+        std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_MUTATION", "1");
+        std::env::set_var("CANOPUS_MOCK_GITHUB", "1");
+        let repo = git_repo("work-intake-no-owner-repo");
+        let registration = serde_json::json!({"github_project_id":"PVT_1"}).to_string();
+        let intake_args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--registration".to_string(),
+            registration,
+            "--task-id".to_string(),
+            "discord-missing".to_string(),
+            "--agenda-id".to_string(),
+            "agenda-discord-missing".to_string(),
+            "--request".to_string(),
+            "missing owner repo".to_string(),
+            "--json".to_string(),
+        ];
+
+        let err = work_intake(&intake_args).unwrap_err();
+
+        assert!(err.to_string().contains("github_owner"));
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn work_intake_required_project_sync_preflights_before_issue_creation() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
+        std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_MUTATION", "1");
+        std::env::set_var("CANOPUS_MOCK_GITHUB", "1");
+        let repo = git_repo("work-intake-required-preflight");
+        let registration = serde_json::json!({
+            "github_owner":"acme",
+            "github_repo":"demo"
+        })
+        .to_string();
+        let intake_args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--registration".to_string(),
+            registration,
+            "--task-id".to_string(),
+            "discord-required".to_string(),
+            "--agenda-id".to_string(),
+            "agenda-discord-required".to_string(),
+            "--request".to_string(),
+            "must sync project".to_string(),
+            "--project-sync".to_string(),
+            "required".to_string(),
+            "--json".to_string(),
+        ];
+
+        let err = work_intake(&intake_args).unwrap_err();
+
+        assert!(err.to_string().contains("--project-sync required"));
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn work_intake_reports_partial_failure_after_issue_creation() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        std::env::set_var("CANOPUS_ENABLE_GITHUB", "1");
+        std::env::set_var("CANOPUS_ENABLE_LIVE_MUTATIONS", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_MUTATION", "1");
+        std::env::set_var("CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION", "1");
+        std::env::set_var("CANOPUS_MOCK_GITHUB", "1");
+        std::env::set_var("CANOPUS_MOCK_GITHUB_PROJECT_SYNC_FAIL", "1");
+        let repo = git_repo("work-intake-partial-failure");
+        let registration = serde_json::json!({
+            "github_owner":"acme",
+            "github_repo":"demo",
+            "github_project_id":"PVT_1",
+            "github_project_status":"Issue Created"
+        })
+        .to_string();
+        let intake_args = vec![
+            "--repo".to_string(),
+            repo.display().to_string(),
+            "--registration".to_string(),
+            registration,
+            "--task-id".to_string(),
+            "discord-partial".to_string(),
+            "--agenda-id".to_string(),
+            "agenda-discord-partial".to_string(),
+            "--request".to_string(),
+            "partial fail".to_string(),
+            "--json".to_string(),
+        ];
+
+        let err = work_intake(&intake_args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("GitHub Project sync failed after Issue creation"));
+        let _ = fs::remove_dir_all(repo);
+        clear_canopus_env();
+    }
+
+    #[test]
+    fn approved_processed_tasks_requires_approval_and_finalize_evidence() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("canopus-approved-processed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let tasks_path = root.join("tasks.json");
+        fs::write(
+            &tasks_path,
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "task_id":"discord-string",
+                    "payload": serde_json::to_string(&serde_json::json!({
+                        "agenda_id":"agenda-discord-string",
+                        "approval_state":"approved",
+                        "finalize_requested_at":"2026-05-05T00:00:00Z"
+                    })).unwrap(),
+                    "meta":{"status":"Processed"}
+                },
+                {
+                    "task_id":"discord-object",
+                    "payload": {
+                        "canopus_agenda_id":"agenda-discord-object",
+                        "approval_state":"approved",
+                        "finalize_requested_at":"2026-05-05T00:00:01Z"
+                    },
+                    "meta":{"status":"Processed"}
+                },
+                {
+                    "task_id":"discord-no-finalize",
+                    "payload": {
+                        "agenda_id":"agenda-discord-no-finalize",
+                        "approval_state":"approved"
+                    },
+                    "meta":{"status":"Processed"}
+                },
+                {
+                    "task_id":"discord-not-approved",
+                    "payload": {
+                        "agenda_id":"agenda-discord-not-approved",
+                        "approval_state":"pending",
+                        "finalize_requested_at":"2026-05-05T00:00:02Z"
+                    },
+                    "meta":{"status":"Processed"}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let tasks = approved_processed_tasks(&tasks_path).unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                ApprovedProcessedTask {
+                    task_id: "discord-string".to_string(),
+                    run_id: "agenda-discord-string".to_string()
+                },
+                ApprovedProcessedTask {
+                    task_id: "discord-object".to_string(),
+                    run_id: "agenda-discord-object".to_string()
+                },
+            ]
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

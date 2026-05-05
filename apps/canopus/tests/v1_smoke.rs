@@ -227,6 +227,27 @@ async fn v1_smoke_closes_pending_task_to_finalize_record_offline() {
             .unwrap(),
         TransitionOutcome::Applied
     );
+    let mut stored_tasks =
+        serde_json::from_str::<Vec<serde_json::Value>>(&fs::read_to_string(&tasks_path).unwrap())
+            .unwrap();
+    let task = stored_tasks
+        .iter_mut()
+        .find(|task| task["task_id"] == "V1-SMOKE-1")
+        .unwrap();
+    task["payload"] = serde_json::Value::String(
+        serde_json::json!({
+            "request": "v1 smoke request",
+            "agenda_id": "agenda-v1-smoke-1",
+            "approval_state": "approved",
+            "finalize_requested_at": "2026-05-05T00:00:00Z"
+        })
+        .to_string(),
+    );
+    fs::write(
+        &tasks_path,
+        serde_json::to_string_pretty(&stored_tasks).unwrap(),
+    )
+    .unwrap();
 
     cli::run(vec![
         "canopus".to_string(),
@@ -241,7 +262,7 @@ async fn v1_smoke_closes_pending_task_to_finalize_record_offline() {
     .await
     .unwrap();
 
-    let finalize_path = state.join("runs").join("v1-smoke-1-finalize.txt");
+    let finalize_path = state.join("runs").join("agenda-v1-smoke-1-finalize.txt");
     assert!(
         finalize_path.exists(),
         "watch must create {}",
@@ -249,9 +270,11 @@ async fn v1_smoke_closes_pending_task_to_finalize_record_offline() {
     );
     let finalize_record = fs::read_to_string(&finalize_path).unwrap();
     assert!(finalize_record.contains("finalize mode: DryRun"));
-    assert!(finalize_record.contains("agenda_id: v1-smoke-1"));
+    assert!(finalize_record.contains("agenda_id: agenda-v1-smoke-1"));
     assert!(finalize_record.contains("dry-run: skipped git add/commit/push"));
-    let delivery_gate_path = state.join("runs").join("v1-smoke-1-delivery-gate.json");
+    let delivery_gate_path = state
+        .join("runs")
+        .join("agenda-v1-smoke-1-delivery-gate.json");
     assert!(
         delivery_gate_path.exists(),
         "watch must create {}",

@@ -51,7 +51,13 @@ async fn watch_and_explicit_finalize_share_idempotent_dry_run_record() {
     let task = TaskMessage {
         task_id: "AGENDA-P0-1".to_string(),
         task_type: TaskType::Custom("canopus.agent".to_string()),
-        payload: "agenda_id=agenda-p0-1\nrole=reviewer\n".to_string(),
+        payload: serde_json::json!({
+            "agenda_id":"agenda-p0-1",
+            "role":"reviewer",
+            "approval_state":"approved",
+            "finalize_requested_at":"2026-05-05T00:00:00Z"
+        })
+        .to_string(),
         meta: TaskMeta {
             status: TaskStatus::Processed,
             created_at: Utc::now(),

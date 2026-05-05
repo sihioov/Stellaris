@@ -8,6 +8,13 @@ pub struct GitHubClient {
     repo: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubIssueCreated {
+    pub number: u64,
+    pub url: String,
+    pub node_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphQlOperationKind {
     Query,
@@ -311,8 +318,8 @@ impl GitHubClient {
         Ok(Some(project_id))
     }
 
-    /// GitHub Issue 생성. 성공 시 issue_number 반환.
-    pub fn create_issue(&self, title: &str, body: &str) -> CanopusResult<u64> {
+    /// GitHub Issue 생성. 성공 시 issue metadata 반환.
+    pub fn create_issue(&self, title: &str, body: &str) -> CanopusResult<GitHubIssueCreated> {
         let url = format!("{}/issues", self.base_url());
         let payload = serde_json::json!({ "title": title, "body": body });
         let resp: serde_json::Value = self
@@ -325,9 +332,27 @@ impl GitHubClient {
             .map_err(|e| CanopusError::Tool(e.to_string()))?
             .into_json()
             .map_err(|e| CanopusError::Tool(e.to_string()))?;
-        resp["number"]
+        let number = resp["number"]
             .as_u64()
-            .ok_or_else(|| CanopusError::Tool("missing issue number in response".into()))
+            .ok_or_else(|| CanopusError::Tool("missing issue number in response".into()))?;
+        let url = resp["html_url"]
+            .as_str()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "https://github.com/{}/{}/issues/{number}",
+                    self.owner, self.repo
+                )
+            });
+        let node_id = resp["node_id"]
+            .as_str()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        Ok(GitHubIssueCreated {
+            number,
+            url,
+            node_id,
+        })
     }
 
     /// Issue의 모든 comment 조회.

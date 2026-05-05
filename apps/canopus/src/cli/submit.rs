@@ -542,9 +542,12 @@ fn maybe_create_qa_issue(agenda: &Agenda, artifacts: &[Artifact]) -> Option<u64>
         .join("\n\n");
     let title = format!("[Canopus Q&A] {}", agenda.request);
     match gh.create_issue(&title, &questions) {
-        Ok(n) => {
-            notify_discord(&format!("❓ **Q&A Issue 생성** — #{n} 에 답변해 주세요."));
-            Some(n)
+        Ok(issue) => {
+            notify_discord(&format!(
+                "❓ **Q&A Issue 생성** — #{} 에 답변해 주세요.",
+                issue.number
+            ));
+            Some(issue.number)
         }
         Err(e) => {
             log::warn!("[analyst] GitHub Issue creation failed: {e}");

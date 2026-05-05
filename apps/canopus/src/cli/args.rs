@@ -90,7 +90,36 @@ pub(crate) struct WorkIntakeArgs {
     pub(crate) task_id: String,
     pub(crate) agenda_id: String,
     pub(crate) request: String,
+    pub(crate) project_sync: ProjectSyncPolicy,
     pub(crate) discord_message_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectSyncPolicy {
+    Off,
+    BestEffort,
+    Required,
+}
+
+impl ProjectSyncPolicy {
+    pub(crate) fn parse(value: &str) -> CanopusResult<Self> {
+        match value {
+            "off" => Ok(Self::Off),
+            "best-effort" => Ok(Self::BestEffort),
+            "required" => Ok(Self::Required),
+            _ => Err(CanopusError::InvalidInput(format!(
+                "unsupported work-intake --project-sync `{value}` (expected off, best-effort, or required)"
+            ))),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::BestEffort => "best-effort",
+            Self::Required => "required",
+        }
+    }
 }
 
 impl WorkIntakeArgs {
@@ -100,6 +129,7 @@ impl WorkIntakeArgs {
         let mut task_id = None;
         let mut agenda_id = None;
         let mut request = None;
+        let mut project_sync = ProjectSyncPolicy::BestEffort;
         let mut discord_message_url = None;
         let mut index = 0;
         while index < args.len() {
@@ -123,6 +153,11 @@ impl WorkIntakeArgs {
                 "--request" => {
                     index += 1;
                     request = Some(required_value(args, index, "--request")?.to_string());
+                }
+                "--project-sync" => {
+                    index += 1;
+                    project_sync =
+                        ProjectSyncPolicy::parse(required_value(args, index, "--project-sync")?)?;
                 }
                 "--discord-message-url" => {
                     index += 1;
@@ -154,6 +189,7 @@ impl WorkIntakeArgs {
             request: request.ok_or_else(|| {
                 CanopusError::InvalidInput("work-intake requires --request".to_string())
             })?,
+            project_sync,
             discord_message_url,
         })
     }

@@ -278,6 +278,29 @@ class DiscordBotConfigTests(unittest.TestCase):
             stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
             self.assertEqual(stored["meta"]["approval_state"], "approved")
 
+    def test_approval_hook_records_discord_provenance_when_provided(self):
+        bot = load_bot()
+        task = {
+            "task_id": "discord-1",
+            "task_type": {"Custom": "canopus.agent"},
+            "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "pending"}),
+            "meta": {"status": "PendingReview"},
+        }
+
+        bot.mark_task_approved(
+            task,
+            approved_by="1234",
+            approval_source="discord",
+            approval_message_url="https://discord.com/channels/1/2/3",
+        )
+
+        payload = json.loads(task["payload"])
+        self.assertEqual(payload["approved_by"], "1234")
+        self.assertEqual(payload["approval_source"], "discord")
+        self.assertEqual(payload["approval_message_url"], "https://discord.com/channels/1/2/3")
+        self.assertEqual(task["meta"]["approved_by"], "1234")
+        self.assertEqual(task["meta"]["approval_source"], "discord")
+
     def test_promote_pending_proposal_with_intake_records_success_metadata(self):
         bot = load_bot()
         task = {
@@ -317,6 +340,65 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertEqual(task["meta"]["proposal_intake_state"], "not_required")
 
 class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_canopus_json_preserves_partial_failure_stdout_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_canopus.py"
+            script.write_text(
+                "import json, sys\n"
+                "print(json.dumps({'ok': False, 'error': 'project sync failed', 'github_issue_number': 42}))\n"
+                "print('stderr detail', file=sys.stderr)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(CANOPUS_COMMAND=f"{sys.executable} {script}")
+
+            result, error = await bot.run_canopus_json(["work-intake"])
+
+            self.assertEqual(result["ok"], False)
+            self.assertEqual(result["github_issue_number"], 42)
+            self.assertIn("stderr detail", error)
+
+    async def test_intake_github_work_runs_for_issue_only_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_canopus.py"
+            argv_path = Path(tmp) / "argv.json"
+            script.write_text(
+                "import json, pathlib, sys\n"
+                f"pathlib.Path({str(argv_path)!r}).write_text(json.dumps(sys.argv), encoding='utf-8')\n"
+                "print(json.dumps({'ok': True, 'github_issue_number': 7, 'github_issue_url': 'https://github.test/acme/demo/issues/7'}))\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(CANOPUS_COMMAND=f"{sys.executable} {script}")
+
+            result, error = await bot.intake_github_work(
+                {"repo_path": "/repo", "github_owner": "acme", "github_repo": "demo"},
+                "discord-1",
+                "agenda-discord-1",
+                "ship issue",
+                "https://discord.test/message",
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(result["github_issue_number"], 7)
+            argv = json.loads(argv_path.read_text(encoding="utf-8"))
+            self.assertIn("--project-sync", argv)
+            self.assertIn("best-effort", argv)
+            self.assertNotIn("github_project_id", json.loads(argv[argv.index("--registration") + 1]))
+
+    async def test_intake_github_work_skips_without_owner_repo(self):
+        bot = load_bot(CANOPUS_COMMAND=f"{sys.executable} -c 'raise SystemExit(99)'")
+
+        result, error = await bot.intake_github_work(
+            {"repo_path": "/repo", "github_project_id": "PVT_1"},
+            "discord-1",
+            "agenda-discord-1",
+            "ship issue",
+            None,
+        )
+
+        self.assertIsNone(result)
+        self.assertIsNone(error)
+
     async def test_register_github_project_uses_canopus_json_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "fake_canopus.py"

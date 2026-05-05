@@ -377,7 +377,18 @@ async def cmd_approve(ctx, task_id: str = None):
         return
 
     target, error = update_task_status_locked(
-        tasks_path, task_id, "approve", {"PendingReview"}, "PendingReview", "Processed", mark_task_approved
+        tasks_path,
+        task_id,
+        "approve",
+        {"PendingReview"},
+        "PendingReview",
+        "Processed",
+        lambda task: mark_task_approved(
+            task,
+            approved_by=str(ctx.author.id),
+            approval_source="discord",
+            approval_message_url=build_discord_message_link(ctx),
+        ),
     )
     if error:
         await ctx.send(error)

@@ -30,6 +30,13 @@ async def run_canopus_json(args: list[str]) -> tuple[dict | None, str | None]:
     out = stdout.decode(errors="replace").strip()
     err = stderr.decode(errors="replace").strip()
     if proc.returncode != 0:
+        if out:
+            try:
+                parsed_error = json.loads(out)
+            except json.JSONDecodeError:
+                parsed_error = None
+            if isinstance(parsed_error, dict) and parsed_error.get("ok") is False:
+                return parsed_error, err or parsed_error.get("error") or f"canopus exited {proc.returncode}"
         return None, err or out or f"canopus exited {proc.returncode}"
     try:
         parsed = json.loads(out)
@@ -58,7 +65,7 @@ async def register_github_project(repo_path: str, github_opts: dict | None) -> t
 
 
 async def intake_github_work(project: dict, task_id: str, agenda_id: str, request: str, message_url: str | None) -> tuple[dict | None, str | None]:
-    if not project.get("github_project_id"):
+    if not (project.get("github_owner") and project.get("github_repo")):
         return None, None
     args = [
         "work-intake",
@@ -67,6 +74,7 @@ async def intake_github_work(project: dict, task_id: str, agenda_id: str, reques
         "--task-id", task_id,
         "--agenda-id", agenda_id,
         "--request", request,
+        "--project-sync", "best-effort",
         "--json",
     ]
     if message_url:

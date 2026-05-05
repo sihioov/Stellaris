@@ -151,3 +151,38 @@ export CANOPUS_AGENT_COMMAND='<agent command that reads CANOPUS_* env and writes
 ```
 
 Keep `CANOPUS_AGENT_RUNTIME` unset for V1 mock evidence. The `AgentRunResult.message_log` schema is reserved in V1; actual message persistence is V2 work.
+
+## 10. 2026-05-05 live Discord → GitHub intake slice
+
+This is the minimal live slice intended for the first Discord-operated deployment. It permits **GitHub Issue creation for Discord work intake** while keeping GitHub Project sync optional and data-gated.
+
+### Supported operator path
+
+1. Register a Discord category/project with GitHub owner/repo metadata.
+2. Use `!run <request>` or `!propose-approve <task_id>` from Discord.
+3. Europa calls `canopus work-intake` when the project registration has `github_owner` and `github_repo`.
+4. Canopus creates a GitHub Issue and returns issue metadata to the task payload.
+5. If project sync data and gates are complete, Canopus may also sync Project v2 according to `--project-sync`; otherwise issue creation still succeeds in best-effort mode.
+6. Use `!approve <task_id>` only after review. Approval writes `approval_state=approved`, `finalize_requested_at`, and Discord provenance (`approved_by`, `approval_source=discord`, `approval_message_url`).
+7. `canopus watch --once <tasks.json>` finalizes only `Processed` tasks that contain both approval evidence and a finalize request in the decoded payload.
+
+### Required gates for Issue creation
+
+```bash
+export CANOPUS_ENABLE_GITHUB=1
+export CANOPUS_ENABLE_LIVE_MUTATIONS=1
+export CANOPUS_ALLOW_GITHUB_MUTATION=1
+export GITHUB_TOKEN='<token with repo issue permission>'
+```
+
+`work-intake` does **not** use fake owner/repo defaults. The project registration must include `github_owner` and `github_repo`; otherwise the command fails before creating an Issue.
+
+### Project sync policy
+
+`canopus work-intake` accepts:
+
+- `--project-sync off` — never sync Project v2.
+- `--project-sync best-effort` — default. Sync only when all project identity, status target, created Issue number, and `CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=1` are present. Missing data skips Project sync but keeps the Issue.
+- `--project-sync required` — preflight before Issue creation. Fails unless project identity, status target, `CANOPUS_ENABLE_GITHUB=1`, `CANOPUS_ENABLE_LIVE_MUTATIONS=1`, and `CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=1` are present.
+
+If Project sync is attempted after Issue creation and then fails, Canopus exits nonzero but writes one stdout JSON object with `ok=false` plus the created Issue metadata. Europa preserves that object so operators can see the Issue that already exists.

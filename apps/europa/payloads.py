@@ -271,7 +271,7 @@ def _artifact_paths(project: dict | None, task: dict) -> list[str]:
     return found[:10]
 
 
-def mark_task_approved(task: dict) -> None:
+def mark_task_approved(task: dict, approved_by: str | None = None, approval_source: str | None = None, approval_message_url: str | None = None) -> None:
     ts = now_iso()
     payload = _payload_data(task)
     payload["confirmation_state"] = "approved"
@@ -279,11 +279,23 @@ def mark_task_approved(task: dict) -> None:
     payload["approved_at"] = ts
     payload["finalize_requested_at"] = ts
     payload["github_project_status"] = "Approved"
+    if approved_by is not None:
+        payload["approved_by"] = str(approved_by)
+    if approval_source is not None:
+        payload["approval_source"] = approval_source
+    if approval_message_url is not None:
+        payload["approval_message_url"] = approval_message_url
     task["payload"] = json.dumps(payload, ensure_ascii=False)
     task.setdefault("meta", {})["confirmation_state"] = "approved"
     task["meta"]["approval_state"] = "approved"
     task["meta"]["approved_at"] = ts
     task["meta"]["finalize_requested_at"] = ts
+    if approved_by is not None:
+        task["meta"]["approved_by"] = str(approved_by)
+    if approval_source is not None:
+        task["meta"]["approval_source"] = approval_source
+    if approval_message_url is not None:
+        task["meta"]["approval_message_url"] = approval_message_url
 
 
 def mark_task_rejected(task: dict) -> None:
