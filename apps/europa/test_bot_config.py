@@ -18,6 +18,7 @@ def load_bot(**env):
         "discord.ext.commands",
         "dotenv",
         "config",
+        "canopus_client",
         "payloads",
         "projects_store",
         "tasks_store",
