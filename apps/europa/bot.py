@@ -63,11 +63,13 @@ from payloads import (
     build_discord_message_link,
     build_task_payload,
     canopus_github_project_mode_metadata,
+    deterministic_agenda_id_for_github_issue,
     github_issue_create_url,
     github_repo_slug,
     mark_task_approved,
     mark_task_rejected,
     now_iso,
+    resolve_agenda_id,
     truncate_text,
 )
 from projects_store import (
@@ -438,7 +440,11 @@ async def cmd_propose_approve(ctx, task_id: str = None):
         return
     payload = _payload_data(proposal)
     request = payload.get("request") or payload.get("prompt") or "Approved proposal"
-    agenda_id = payload.get("agenda_id") or payload.get("canopus_agenda_id") or f"agenda-{proposal['task_id']}"
+    agenda_id = (
+        payload.get("agenda_id")
+        or payload.get("canopus_agenda_id")
+        or resolve_agenda_id(proposal["task_id"], payload, project)
+    )
     work_intake, intake_error = await intake_github_work(project, proposal["task_id"], agenda_id, request, payload.get("discord_message_url"))
     if intake_error:
         update_task_status_locked(

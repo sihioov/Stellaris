@@ -32,6 +32,97 @@ def truncate_text(text: str, limit: int) -> str:
     return text[: max(0, limit - 20)].rstrip() + "\n…(truncated)"
 
 
+_RUN_IDENTITY_DASH_CHARS = frozenset("-_./: ")
+
+
+def _sanitize_run_identity(raw: str) -> str:
+    """Mirror canopus' apps/canopus/src/core/run_identity.rs ``sanitize_run_identity``.
+
+    Lowercase ASCII alphanumerics survive verbatim; one of ``-_./: `` collapses
+    into a single dash; everything else is dropped. Trailing dashes are trimmed.
+    Caller must guarantee the result is non-empty for downstream lookup.
+    """
+    out: list[str] = []
+    last_was_dash = False
+    for ch in raw.strip():
+        if ch.isascii() and ch.isalnum():
+            out.append(ch.lower())
+            last_was_dash = False
+        elif ch in _RUN_IDENTITY_DASH_CHARS:
+            if out and not last_was_dash:
+                out.append("-")
+                last_was_dash = True
+    while out and out[-1] == "-":
+        out.pop()
+    return "".join(out)
+
+
+def deterministic_agenda_id_for_github_issue(owner: str, repo: str, number) -> str:
+    """Build the same ``gh-{owner}-{repo}-{number}`` agenda id Rust ``Agenda::from_github_issue`` produces.
+
+    Raises ``ValueError`` when the inputs sanitize to an empty id (e.g. all
+    non-ASCII characters), matching the Rust contract that an agenda id must
+    contain at least one alphanumeric.
+    """
+    raw = f"gh-{owner}-{repo}-{number}"
+    sanitised = _sanitize_run_identity(raw)
+    if not sanitised:
+        raise ValueError("agenda id must contain at least one ASCII letter or digit")
+    return sanitised
+
+
+def _coerce_issue_number(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def github_issue_identity(*sources) -> tuple[str, str, int] | None:
+    """Pick the first (owner, repo, issue_number) triple from any source dict.
+
+    Falls back through ``GITHUB_OWNER`` / ``GITHUB_REPO`` env defaults for the
+    owner/repo half, but the issue number must come from a source dict because
+    the env config has no notion of a single canonical Issue.
+    """
+    owner = None
+    repo = None
+    number = None
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        if owner is None:
+            owner = src.get("github_owner") or None
+        if repo is None:
+            repo = src.get("github_repo") or None
+        if number is None:
+            number = _coerce_issue_number(src.get("github_issue_number"))
+    if owner is None:
+        owner = GITHUB_OWNER or None
+    if repo is None:
+        repo = GITHUB_REPO or None
+    if owner and repo and number is not None:
+        return owner, repo, number
+    return None
+
+
+def resolve_agenda_id(task_id: str, *sources) -> str:
+    """Pick a deterministic GitHub-Issue-derived agenda id when available; otherwise the task-id form.
+
+    The deterministic branch is what V2 will lean on so re-processing the same
+    Issue stays idempotent. Without a full Issue identity, callers keep the
+    pre-existing ``agenda-{task_id}`` id so Europa workflows that have no
+    external ledger continue to work.
+    """
+    identity = github_issue_identity(*sources)
+    if identity is not None:
+        owner, repo, number = identity
+        return deterministic_agenda_id_for_github_issue(owner, repo, number)
+    return f"agenda-{task_id}"
+
+
 def github_repo_slug() -> str | None:
     if GITHUB_OWNER and GITHUB_REPO:
         return f"{GITHUB_OWNER}/{GITHUB_REPO}"
@@ -60,7 +151,7 @@ def build_discord_message_link(ctx) -> str | None:
 
 
 def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str, work_intake: dict | None = None) -> dict:
-    agenda_id = f"agenda-{task_id}"
+    agenda_id = resolve_agenda_id(task_id, work_intake, project)
     title = truncate_text(request.replace("\n", " "), 90)
     payload = {
         "request": request,

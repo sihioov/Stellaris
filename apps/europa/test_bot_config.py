@@ -155,6 +155,98 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertIsNone(payload.get("github_issue_number"))
         self.assertIsNone(payload.get("github_issue_url"))
 
+    def test_task_payload_uses_deterministic_agenda_id_when_work_intake_carries_issue(self):
+        bot = load_bot(GITHUB_OWNER="acme", GITHUB_REPO="demo")
+        ctx = types.SimpleNamespace(
+            guild=types.SimpleNamespace(id=1),
+            channel=types.SimpleNamespace(id=2),
+            message=types.SimpleNamespace(id=3),
+        )
+        intake = {
+            "github_owner": "Acme",
+            "github_repo": "Demo",
+            "github_issue_number": 42,
+        }
+
+        payload = bot.build_task_payload(
+            ctx,
+            "discord-abc123",
+            "Ship agenda metadata",
+            {"repo_path": "/repo"},
+            "canopus.agent",
+            intake,
+        )
+
+        # gh-{owner}-{repo}-{number} sanitised by run-identity rules (lowercase, dash-collapsed)
+        self.assertEqual(payload["agenda_id"], "gh-acme-demo-42")
+        self.assertEqual(payload["canopus_agenda_id"], "gh-acme-demo-42")
+
+    def test_task_payload_keeps_legacy_agenda_id_without_issue_identity(self):
+        bot = load_bot()
+        ctx = types.SimpleNamespace(
+            guild=types.SimpleNamespace(id=1),
+            channel=types.SimpleNamespace(id=2),
+            message=types.SimpleNamespace(id=3),
+        )
+
+        payload = bot.build_task_payload(
+            ctx,
+            "discord-zzz",
+            "no github context",
+            {"repo_path": "/repo"},
+            "canopus.agent",
+        )
+
+        # No work_intake, no env owner/repo => existing agenda-{task_id} form preserved.
+        self.assertEqual(payload["agenda_id"], "agenda-discord-zzz")
+
+    def test_resolve_agenda_id_helper_priority(self):
+        bot = load_bot(GITHUB_OWNER="acme", GITHUB_REPO="demo")
+        # Priority 1: explicit issue identity in any source dict.
+        self.assertEqual(
+            bot.resolve_agenda_id(
+                "discord-1",
+                {"github_owner": "Acme", "github_repo": "Demo", "github_issue_number": 7},
+            ),
+            "gh-acme-demo-7",
+        )
+        # Priority 2: env owner/repo with number from a source dict.
+        self.assertEqual(
+            bot.resolve_agenda_id(
+                "discord-1",
+                {"github_issue_number": "8"},  # string number must be coerced
+            ),
+            "gh-acme-demo-8",
+        )
+        # No issue number anywhere => task-id-based fallback.
+        self.assertEqual(
+            bot.resolve_agenda_id("discord-1", {"github_owner": "acme", "github_repo": "demo"}),
+            "agenda-discord-1",
+        )
+
+    def test_deterministic_agenda_id_helper_matches_canopus_run_identity_rules(self):
+        bot = load_bot()
+        # Same identity twice => same id.
+        a = bot.deterministic_agenda_id_for_github_issue("acme", "demo", 42)
+        b = bot.deterministic_agenda_id_for_github_issue("acme", "demo", 42)
+        self.assertEqual(a, b)
+        self.assertEqual(a, "gh-acme-demo-42")
+        # Sanitises uppercase / spaces / slashes the same way Rust does.
+        self.assertEqual(
+            bot.deterministic_agenda_id_for_github_issue("Acme/Org", "Demo Repo", 9001),
+            "gh-acme-org-demo-repo-9001",
+        )
+        # Different identity => different id.
+        self.assertNotEqual(
+            bot.deterministic_agenda_id_for_github_issue("acme", "demo", 1),
+            bot.deterministic_agenda_id_for_github_issue("acme", "demo", 2),
+        )
+        # Non-ASCII owner/repo must still produce a usable id thanks to the
+        # ``gh-`` prefix surviving sanitisation (mirrors Rust derive_run_identity).
+        non_ascii = bot.deterministic_agenda_id_for_github_issue("…", "—", 5)
+        self.assertTrue(non_ascii.startswith("gh"))
+        self.assertIn("5", non_ascii)
+
     def test_approval_hook_updates_payload_and_finalize_signal(self):
         bot = load_bot()
         with tempfile.TemporaryDirectory() as tmp:
