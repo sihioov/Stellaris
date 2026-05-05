@@ -47,6 +47,19 @@ async def run_canopus_json(args: list[str]) -> tuple[dict | None, str | None]:
     return parsed, None
 
 
+async def create_worktree(base_repo_path: str, name: str, target_path: str | None = None) -> tuple[dict | None, str | None]:
+    args = [
+        "worktree",
+        "create",
+        "--repo", base_repo_path,
+        "--name", name,
+        "--json",
+    ]
+    if target_path:
+        args.extend(["--path", target_path])
+    return await run_canopus_json(args)
+
+
 async def register_github_project(repo_path: str, github_opts: dict | None) -> tuple[dict | None, str | None]:
     if not github_opts:
         return None, None

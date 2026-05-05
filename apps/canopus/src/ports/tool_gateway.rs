@@ -11,6 +11,12 @@ pub struct CommandOutput {
 pub trait ToolGateway {
     fn ensure_clean_worktree(&self, repo: &Path) -> CanopusResult<()>;
     fn create_branch(&self, repo: &Path, branch: &str) -> CanopusResult<CommandOutput>;
+    fn create_worktree(
+        &self,
+        repo: &Path,
+        branch: &str,
+        path: &Path,
+    ) -> CanopusResult<CommandOutput>;
     fn run_check(&self, repo: &Path, command: &[&str]) -> CanopusResult<CommandOutput>;
     fn changed_files(&self, repo: &Path) -> CanopusResult<CommandOutput>;
 }

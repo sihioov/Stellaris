@@ -5,6 +5,54 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
+pub(crate) struct WorktreeCreateArgs {
+    pub(crate) repo: PathBuf,
+    pub(crate) name: String,
+    pub(crate) path: Option<PathBuf>,
+}
+
+impl WorktreeCreateArgs {
+    pub(crate) fn parse(args: &[String]) -> CanopusResult<Self> {
+        let mut repo = None;
+        let mut name = None;
+        let mut path = None;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--repo" => {
+                    index += 1;
+                    repo = Some(PathBuf::from(required_value(args, index, "--repo")?));
+                }
+                "--name" => {
+                    index += 1;
+                    name = Some(required_value(args, index, "--name")?.to_string());
+                }
+                "--path" => {
+                    index += 1;
+                    path = Some(PathBuf::from(required_value(args, index, "--path")?));
+                }
+                "--json" => {}
+                value => {
+                    return Err(CanopusError::InvalidInput(format!(
+                        "unknown worktree create argument: {value}"
+                    )))
+                }
+            }
+            index += 1;
+        }
+        Ok(Self {
+            repo: repo.ok_or_else(|| {
+                CanopusError::InvalidInput("worktree create requires --repo".to_string())
+            })?,
+            name: name.ok_or_else(|| {
+                CanopusError::InvalidInput("worktree create requires --name".to_string())
+            })?,
+            path,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ProjectRegisterArgs {
     pub(crate) repo: PathBuf,
     pub(crate) github_owner: String,

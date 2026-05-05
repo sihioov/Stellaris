@@ -34,6 +34,7 @@ impl CanopusRoleMode {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct CanopusMetadata {
     request: String,
+    repo_path: Option<String>,
     agenda_id: Option<String>,
     github_issue_url: Option<String>,
     github_issue_number: Option<String>,
@@ -79,11 +80,16 @@ fn canopus_submit_args(
     } else {
         metadata.request.as_str()
     };
+    let submit_repo = metadata
+        .repo_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(repo);
 
     let mut args = vec![
         "submit".to_string(),
         "--repo".to_string(),
-        repo.to_string(),
+        submit_repo.to_string(),
         "--state".to_string(),
         state.to_string(),
         "--agenda-id".to_string(),
@@ -197,6 +203,7 @@ fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
                     .or_else(|| get("prompt"))
                     .or_else(|| get("title"))
                     .unwrap_or_else(|| payload.to_string()),
+                repo_path: get("repo_path"),
                 agenda_id: get("agenda_id"),
                 github_issue_url: get("github_issue_url"),
                 github_issue_number: get("github_issue_number")
@@ -230,6 +237,7 @@ fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
         let value = value.trim().to_string();
         match key.trim() {
             "prompt" | "request" => metadata.request = value,
+            "repo_path" => metadata.repo_path = Some(value),
             "agenda_id" => metadata.agenda_id = Some(value),
             "github_issue_url" => metadata.github_issue_url = Some(value),
             "github_issue_number" | "github_issue" | "issue_number" => {
@@ -367,6 +375,12 @@ mod tests {
         }
     }
 
+    fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].as_str())
+    }
+
     #[tokio::test]
     async fn unsupported_custom_label_fails_loudly() {
         let err = handle(
@@ -481,6 +495,75 @@ mod tests {
             .any(|pair| pair == ["--github-project-mode", "validate-read-only"]));
         assert!(!args.iter().any(|arg| arg == "--allow-github-mutation"));
         assert!(!args.iter().any(|arg| arg == "--allow-mutation"));
+    }
+
+    #[test]
+    fn json_payload_repo_path_overrides_submit_repo_fallback() {
+        let payload = serde_json::json!({
+            "request": "run in selected worktree",
+            "repo_path": "/worktrees/smoke"
+        })
+        .to_string();
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo-from-env",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(arg_value(&args, "--repo"), Some("/worktrees/smoke"));
+        assert_eq!(args.last().unwrap(), "run in selected worktree");
+    }
+
+    #[test]
+    fn key_value_payload_repo_path_overrides_submit_repo_fallback() {
+        let args = canopus_submit_args(
+            &task(
+                TaskType::Bug,
+                "request=run legacy payload\nrepo_path=/worktrees/legacy",
+            ),
+            "/repo-from-env",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(arg_value(&args, "--repo"), Some("/worktrees/legacy"));
+        assert_eq!(args.last().unwrap(), "run legacy payload");
+    }
+
+    #[test]
+    fn missing_payload_repo_path_uses_submit_repo_fallback() {
+        let payload = serde_json::json!({
+            "request": "run in default repo"
+        })
+        .to_string();
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo-from-env",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(arg_value(&args, "--repo"), Some("/repo-from-env"));
+        assert_eq!(args.last().unwrap(), "run in default repo");
+    }
+
+    #[test]
+    fn blank_payload_repo_path_uses_submit_repo_fallback() {
+        let payload = serde_json::json!({
+            "request": "run with blank repo metadata",
+            "repo_path": "   "
+        })
+        .to_string();
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo-from-env",
+            "/state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(arg_value(&args, "--repo"), Some("/repo-from-env"));
+        assert_eq!(args.last().unwrap(), "run with blank repo metadata");
     }
 
     #[test]

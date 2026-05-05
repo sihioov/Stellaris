@@ -42,20 +42,15 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
 
                     log::info!("[watch] Processed 태스크 발견: {}", task.task_id);
                     let branch = format!("canopus/{run_id}");
-                    match post_approval(
-                        &parsed.repo,
-                        &branch,
-                        &run_id,
-                        None,
-                        &tools,
-                        FinalizeMode::DryRun,
-                    )
-                    .await
-                    .and_then(|output| {
-                        persist_finalize_record_if_absent(&parsed.state, &run_id, &output)
-                    })
-                    .and_then(|()| persist_delivery_gate_report_if_absent(&parsed.state, &run_id))
-                    {
+                    let repo = task.repo_path.as_deref().unwrap_or(&parsed.repo);
+                    match post_approval(repo, &branch, &run_id, None, &tools, FinalizeMode::DryRun)
+                        .await
+                        .and_then(|output| {
+                            persist_finalize_record_if_absent(&parsed.state, &run_id, &output)
+                        })
+                        .and_then(|()| {
+                            persist_delivery_gate_report_if_absent(&parsed.state, &run_id)
+                        }) {
                         Ok(()) => log::info!(
                             "[watch] finalize record persisted for {} ({})",
                             task.task_id,
@@ -79,6 +74,7 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
 struct ApprovedProcessedTask {
     task_id: String,
     run_id: String,
+    repo_path: Option<PathBuf>,
 }
 
 fn approved_processed_tasks(tasks_path: &Path) -> CanopusResult<Vec<ApprovedProcessedTask>> {
@@ -138,9 +134,16 @@ fn approved_processed_tasks(tasks_path: &Path) -> CanopusResult<Vec<ApprovedProc
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(task_id)
             .to_string();
+        let repo_path = payload
+            .get("repo_path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
         approved.push(ApprovedProcessedTask {
             task_id: task_id.to_string(),
             run_id,
+            repo_path,
         });
     }
     Ok(approved)
@@ -738,15 +741,104 @@ mod gate_tests {
             vec![
                 ApprovedProcessedTask {
                     task_id: "discord-string".to_string(),
-                    run_id: "agenda-discord-string".to_string()
+                    run_id: "agenda-discord-string".to_string(),
+                    repo_path: None
                 },
                 ApprovedProcessedTask {
                     task_id: "discord-object".to_string(),
-                    run_id: "agenda-discord-object".to_string()
+                    run_id: "agenda-discord-object".to_string(),
+                    repo_path: None
                 },
             ]
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn approved_processed_tasks_carries_payload_repo_path() {
+        let root =
+            std::env::temp_dir().join(format!("canopus-approved-repo-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let tasks_path = root.join("tasks.json");
+        fs::write(
+            &tasks_path,
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "task_id":"discord-object",
+                    "payload": {
+                        "agenda_id":"agenda-discord-object",
+                        "approval_state":"approved",
+                        "finalize_requested_at":"2026-05-05T00:00:01Z",
+                        "repo_path":"/tmp/payload-repo"
+                    },
+                    "meta":{"status":"Processed"}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let tasks = approved_processed_tasks(&tasks_path).unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![ApprovedProcessedTask {
+                task_id: "discord-object".to_string(),
+                run_id: "agenda-discord-object".to_string(),
+                repo_path: Some(PathBuf::from("/tmp/payload-repo"))
+            }]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn watch_finalization_uses_payload_repo_over_parsed_repo() {
+        let fallback_repo = git_repo("watch-fallback-repo");
+        let payload_repo = git_repo("watch-payload-repo");
+        fs::write(fallback_repo.join("fallback.txt"), "fallback change\n").unwrap();
+        fs::write(payload_repo.join("payload.txt"), "payload change\n").unwrap();
+        let state = std::env::temp_dir().join(format!(
+            "canopus-watch-payload-state-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let tasks_path = state.join("tasks.json");
+        fs::write(
+            &tasks_path,
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "task_id":"discord-payload",
+                    "payload": {
+                        "agenda_id":"agenda-payload",
+                        "approval_state":"approved",
+                        "finalize_requested_at":"2026-05-05T00:00:01Z",
+                        "repo_path": payload_repo.display().to_string()
+                    },
+                    "meta":{"status":"Processed"}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = vec![
+            "--repo".to_string(),
+            fallback_repo.display().to_string(),
+            "--state".to_string(),
+            state.display().to_string(),
+            "--once".to_string(),
+            tasks_path.display().to_string(),
+        ];
+
+        watch(&args).await.unwrap();
+
+        let record = fs::read_to_string(finalize_record_path(&state, "agenda-payload")).unwrap();
+        assert!(record.contains("payload.txt"));
+        assert!(!record.contains("fallback.txt"));
+        let _ = fs::remove_dir_all(state);
+        let _ = fs::remove_dir_all(fallback_repo);
+        let _ = fs::remove_dir_all(payload_repo);
     }
 
     #[test]

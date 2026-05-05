@@ -1,10 +1,85 @@
 """Project registration persistence helpers for the Stellaris Discord bot."""
 import json
 import os
+import re
 import shlex
 import tempfile
 
 from config import PROJECTS_JSON_PATH, TASKS_DIR, TASKS_JSON_PATH
+
+
+WORKTREE_DEFAULT_NAME = "default"
+_WORKTREE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def validate_worktree_name(name: str | None) -> str | None:
+    """Return an error string when a Discord worktree name is unsafe."""
+    if not name or not name.strip():
+        return "worktree 이름이 필요합니다."
+    value = name.strip()
+    if value.startswith(".") or ".." in value:
+        return "worktree 이름에는 선행 점이나 `..` 을 사용할 수 없습니다."
+    if not _WORKTREE_NAME_RE.fullmatch(value):
+        return "worktree 이름은 영문/숫자로 시작하고 영문, 숫자, `.`, `_`, `-` 만 사용할 수 있습니다."
+    return None
+
+
+def _worktree_entry(repo_path: str, created_at: str | None = None) -> dict:
+    entry = {"repo_path": repo_path}
+    if created_at:
+        entry["created_at"] = created_at
+    return entry
+
+
+def normalize_project_worktrees(project: dict) -> dict:
+    """Return a backward-compatible project record with worktree fields hydrated."""
+    normalized = dict(project)
+    repo_path = str(normalized.get("repo_path") or "")
+    base_repo_path = str(normalized.get("base_repo_path") or repo_path)
+    normalized["base_repo_path"] = base_repo_path
+
+    raw_worktrees = normalized.get("worktrees")
+    worktrees = {}
+    if isinstance(raw_worktrees, dict):
+        for name, entry in raw_worktrees.items():
+            if isinstance(entry, dict):
+                path = entry.get("repo_path")
+                if path:
+                    worktrees[str(name)] = dict(entry)
+            elif isinstance(entry, str) and entry:
+                worktrees[str(name)] = _worktree_entry(entry)
+
+    if WORKTREE_DEFAULT_NAME not in worktrees and base_repo_path:
+        worktrees[WORKTREE_DEFAULT_NAME] = _worktree_entry(base_repo_path)
+
+    active = str(normalized.get("active_worktree") or WORKTREE_DEFAULT_NAME)
+    if active not in worktrees and repo_path:
+        worktrees[active] = _worktree_entry(repo_path)
+
+    normalized["active_worktree"] = active
+    normalized["worktrees"] = worktrees
+    if not normalized.get("repo_path") and active in worktrees:
+        normalized["repo_path"] = worktrees[active]["repo_path"]
+    return normalized
+
+
+def record_project_worktree(project: dict, name: str, repo_path: str, created_at: str) -> dict:
+    normalized = normalize_project_worktrees(project)
+    normalized["worktrees"][name] = _worktree_entry(repo_path, created_at)
+    return normalized
+
+
+def switch_project_worktree(project: dict, name: str) -> tuple[dict | None, str | None]:
+    normalized = normalize_project_worktrees(project)
+    entry = normalized["worktrees"].get(name)
+    if not entry:
+        return None, f"알 수 없는 worktree입니다: `{name}`"
+    repo_path = entry.get("repo_path")
+    if not repo_path:
+        return None, f"worktree 경로가 비어 있습니다: `{name}`"
+    normalized["repo_path"] = repo_path
+    normalized["active_worktree"] = name
+    return normalized, None
 
 
 def read_projects() -> dict:

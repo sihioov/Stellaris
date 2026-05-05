@@ -21,6 +21,7 @@ Commands:
   !cancel [task_id]           - Cancel a non-terminal task as Failed
   !show [task_id]             - Show task details and artifact paths
   !status                     - Show tasks for current project
+  !worktree [list|create|switch] - Show/list/create/switch project worktrees
 
 Authorization: set ALLOWED_USER_IDS=123456789,987654321 in env to restrict access.
 """
@@ -38,6 +39,7 @@ from canopus_client import (
     ASK_COMMAND,
     CANOPUS_COMMAND,
     CANOPUS_STATE_PATH,
+    create_worktree,
     intake_github_work,
     mark_proposal_intake_failed,
     promote_pending_proposal_with_intake,
@@ -77,8 +79,12 @@ from projects_store import (
     get_project,
     get_tasks_path,
     merge_project_registration,
+    normalize_project_worktrees,
     parse_github_registration_flags,
     read_projects,
+    record_project_worktree,
+    switch_project_worktree,
+    validate_worktree_name,
     write_projects,
 )
 from tasks_store import (
@@ -187,6 +193,91 @@ def worktree_status_text(repo_path: str) -> str:
         f"**HEAD**: `{head or '?'}`\n"
         f"**Git dir**: `{git_common_dir or '?'}`\n"
         f"**Status**: {dirty_text}"
+    )
+
+
+
+def worktree_list_text(project: dict) -> str:
+    normalized = normalize_project_worktrees(project)
+    active = normalized.get("active_worktree")
+    lines = ["🧰 **Worktree 목록**"]
+    lines.append(f"**Base**: `{normalized.get('base_repo_path', '?')}`")
+    lines.append(f"**Active**: `{active}`")
+    for name, entry in sorted(normalized.get("worktrees", {}).items()):
+        path = entry.get("repo_path", "?") if isinstance(entry, dict) else str(entry)
+        marker = "➡️" if name == active else "•"
+        validity = "✅" if is_git_repo_path(path) else "⚠️ invalid/missing"
+        lines.append(f"{marker} `{name}` — {validity} `{path}`")
+    return "\n".join(lines)
+
+
+def worktree_usage_text() -> str:
+    return (
+        "사용법:\n"
+        "`!worktree` — active worktree 상태\n"
+        "`!worktree list` — 등록된 worktree 목록\n"
+        "`!worktree create <name>` — Canopus를 통해 새 worktree 생성\n"
+        "`!worktree switch <name>` — active worktree 변경"
+    )
+
+
+async def handle_worktree_create(ctx, category_id: int, project: dict, name: str | None) -> None:
+    name = (name or "").strip()
+    name_error = validate_worktree_name(name)
+    if name_error:
+        await ctx.send(f"⚠️ {name_error}\n{worktree_usage_text()}")
+        return
+
+    data = read_projects()
+    current = normalize_project_worktrees(data["projects"].get(str(category_id), project))
+    if name in current.get("worktrees", {}):
+        await ctx.send(f"⚠️ 이미 등록된 worktree 이름입니다: `{name}`")
+        return
+
+    result, error = await create_worktree(current["base_repo_path"], name)
+    if error:
+        await ctx.send(f"❌ worktree 생성 실패: {truncate_text(error, 800)}")
+        return
+    if not result or not result.get("repo_path"):
+        await ctx.send("❌ worktree 생성 실패: Canopus 응답에 repo_path가 없습니다.")
+        return
+
+    updated = record_project_worktree(current, name, result["repo_path"], now_iso())
+    data["projects"][str(category_id)] = updated
+    write_projects(data)
+    await ctx.send(
+        "✅ **worktree 생성됨**\n"
+        f"**Name**: `{name}`\n"
+        f"**Repo**: `{result['repo_path']}`\n"
+        "활성화하려면 `!worktree switch {}` 를 실행하세요.".format(name)
+    )
+
+
+async def handle_worktree_switch(ctx, category_id: int, project: dict, name: str | None) -> None:
+    name = (name or "").strip()
+    name_error = validate_worktree_name(name)
+    if name_error:
+        await ctx.send(f"⚠️ {name_error}\n{worktree_usage_text()}")
+        return
+
+    data = read_projects()
+    current = normalize_project_worktrees(data["projects"].get(str(category_id), project))
+    updated, error = switch_project_worktree(current, name)
+    if error:
+        await ctx.send(f"⚠️ {error}\n`!worktree list` 로 확인하세요.")
+        return
+    repo_path = updated["repo_path"]
+    if not is_git_repo_path(repo_path):
+        await ctx.send(f"❌ Git worktree가 아닙니다: `{repo_path}`")
+        return
+
+    data["projects"][str(category_id)] = updated
+    write_projects(data)
+    await ctx.send(
+        "✅ **active worktree 변경됨**\n"
+        f"**Name**: `{name}`\n"
+        f"**Repo**: `{repo_path}`\n"
+        "이후 생성되는 `!run` task payload는 이 경로를 사용합니다."
     )
 
 
@@ -679,8 +770,8 @@ async def cmd_show(ctx, task_id: str = None):
 
 
 @bot.command(name="worktree")
-async def cmd_worktree(ctx):
-    """Show registered repo/worktree git status without mutating it."""
+async def cmd_worktree(ctx, action: str = None, *, name: str = None):
+    """Show, list, create, or switch registered repo/worktrees."""
     if not is_authorized(ctx):
         await ctx.send("🚫 권한이 없습니다.")
         return
@@ -690,7 +781,21 @@ async def cmd_worktree(ctx):
         await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
         return
 
-    await ctx.send(worktree_status_text(project.get("repo_path", "")))
+    action = (action or "status").strip().lower()
+    if action in {"status", "show"}:
+        await ctx.send(worktree_status_text(project.get("repo_path", "")))
+        return
+    if action == "list":
+        await ctx.send(worktree_list_text(project))
+        return
+    if action == "create":
+        await handle_worktree_create(ctx, category_id, project, name)
+        return
+    if action == "switch":
+        await handle_worktree_switch(ctx, category_id, project, name)
+        return
+
+    await ctx.send(f"⚠️ 알 수 없는 worktree 명령입니다: `{action}`\n{worktree_usage_text()}")
 
 
 @bot.command(name="status")
@@ -736,7 +841,10 @@ async def cmd_help(ctx):
         "**🗂️ 프로젝트 관리**\n"
         "`!new-project <이름> <경로>` — 신규 프로젝트 생성\n"
         "ㄴ 디렉토리 생성 + git init + Discord 카테고리/채널 4개 자동 생성\n"
-        "`!register <경로>` — 현재 카테고리에 기존 Git 레포 등록\n\n"
+        "`!register <경로>` — 현재 카테고리에 기존 Git 레포 등록\n"
+        "`!worktree` / `!worktree list` — active worktree 상태/목록 확인\n"
+        "`!worktree create <name>` — Canopus를 통해 새 worktree 생성\n"
+        "`!worktree switch <name>` — 이후 `!run` 대상 worktree 변경\n\n"
 
         "**🤖 AI 작업 실행** *(#planning / #development / #review 채널에서 사용)*\n"
         "`!run <요청>` — AI 작업 시작\n"

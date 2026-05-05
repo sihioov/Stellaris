@@ -608,6 +608,199 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Worktree 상태", ctx.sent[0])
             self.assertIn("clean", ctx.sent[0])
 
+
+    def test_normalize_project_worktrees_hydrates_legacy_record(self):
+        bot = load_bot()
+
+        project = bot.normalize_project_worktrees({"name": "demo", "repo_path": "/repo"})
+
+        self.assertEqual(project["base_repo_path"], "/repo")
+        self.assertEqual(project["active_worktree"], "default")
+        self.assertEqual(project["worktrees"]["default"]["repo_path"], "/repo")
+
+    async def test_worktree_list_reports_legacy_default(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(id=2, name="development", category=types.SimpleNamespace(id=10))
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_worktree(ctx, action="list")
+
+            self.assertIn("Worktree 목록", ctx.sent[0])
+            self.assertIn("`default`", ctx.sent[0])
+            self.assertIn("`/repo`", ctx.sent[0])
+
+    async def test_worktree_create_records_canopus_result_only_on_success(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/base"}}})
+            calls = []
+
+            async def fake_create(base_repo_path, name, target_path=None):
+                calls.append((base_repo_path, name, target_path))
+                return {"status": "created", "name": name, "repo_path": "/base-smoke"}, None
+
+            bot.create_worktree = fake_create
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(id=2, name="development", category=types.SimpleNamespace(id=10))
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_worktree(ctx, action="create", name="smoke")
+
+            self.assertEqual(calls, [("/base", "smoke", None)])
+            stored = bot.read_projects()["projects"]["10"]
+            self.assertEqual(stored["worktrees"]["smoke"]["repo_path"], "/base-smoke")
+            self.assertEqual(stored["repo_path"], "/base")
+            self.assertIn("worktree 생성됨", ctx.sent[0])
+
+    async def test_worktree_create_rejects_unsafe_or_duplicate_without_canopus(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects(
+                {"projects": {"10": {"name": "demo", "repo_path": "/base", "worktrees": {"smoke": {"repo_path": "/base-smoke"}}}}}
+            )
+            calls = []
+
+            async def fake_create(*args, **kwargs):
+                calls.append(args)
+                return None, "should not be called"
+
+            bot.create_worktree = fake_create
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(id=2, name="development", category=types.SimpleNamespace(id=10))
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            bad = Ctx()
+            await bot.cmd_worktree(bad, action="create", name="../bad")
+            duplicate = Ctx()
+            await bot.cmd_worktree(duplicate, action="create", name="smoke")
+
+            self.assertEqual(calls, [])
+            self.assertIn("사용할 수 없습니다", bad.sent[0])
+            self.assertIn("이미 등록된", duplicate.sent[0])
+
+    async def test_worktree_create_failure_does_not_update_project_state(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/base"}}})
+
+            async def fake_create(*args, **kwargs):
+                return None, "git failed"
+
+            bot.create_worktree = fake_create
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(id=2, name="development", category=types.SimpleNamespace(id=10))
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_worktree(ctx, action="create", name="smoke")
+
+            stored = bot.read_projects()["projects"]["10"]
+            self.assertNotIn("smoke", bot.normalize_project_worktrees(stored)["worktrees"])
+            self.assertIn("생성 실패", ctx.sent[0])
+
+    async def test_worktree_switch_updates_future_run_payload_repo(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            smoke = Path(tmp) / "base-smoke"
+            base.mkdir()
+            smoke.mkdir()
+            import subprocess
+            subprocess.run(["git", "init"], cwd=base, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "init"], cwd=smoke, check=True, capture_output=True, text=True)
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects(
+                {
+                    "projects": {
+                        "10": {
+                            "name": "demo",
+                            "repo_path": str(base),
+                            "base_repo_path": str(base),
+                            "active_worktree": "default",
+                            "worktrees": {
+                                "default": {"repo_path": str(base)},
+                                "smoke": {"repo_path": str(smoke)},
+                            },
+                        }
+                    }
+                }
+            )
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(id=2, name="development", category=types.SimpleNamespace(id=10))
+                    self.message = types.SimpleNamespace(id=3)
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            switch_ctx = Ctx()
+            await bot.cmd_worktree(switch_ctx, action="switch", name="smoke")
+            run_ctx = Ctx()
+            await bot.cmd_run(run_ctx, request="touch smoke")
+
+            stored_project = bot.read_projects()["projects"]["10"]
+            self.assertEqual(stored_project["repo_path"], str(smoke))
+            task = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            payload = json.loads(task["payload"])
+            self.assertEqual(payload["repo_path"], str(smoke))
+            self.assertIn("active worktree 변경됨", switch_ctx.sent[0])
+
     async def test_show_includes_discord_identity_and_finalize_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / ".canopus"

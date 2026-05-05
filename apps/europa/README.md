@@ -17,6 +17,7 @@ policy logic here; route mutation to canopus. See
 | `!cancel [task_id]` | Mark a non-terminal task as Failed |
 | `!show <task_id>` | Show task details and artifact paths |
 | `!status` | Show all tasks and their statuses |
+| `!worktree [list|create <name>|switch <name>]` | Show, create via Canopus, or switch project worktrees |
 
 ## Pipeline Flow
 

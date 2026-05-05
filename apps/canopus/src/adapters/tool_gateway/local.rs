@@ -245,6 +245,21 @@ impl ToolGateway for LocalToolGateway {
         }
     }
 
+    fn create_worktree(
+        &self,
+        repo: &Path,
+        branch: &str,
+        path: &Path,
+    ) -> CanopusResult<CommandOutput> {
+        let target = path.to_string_lossy();
+        let output = self.run_command(repo, &["git", "worktree", "add", "-b", branch, &target])?;
+        if output.status == 0 {
+            Ok(output)
+        } else {
+            Err(CanopusError::Tool(output.stderr))
+        }
+    }
+
     fn run_check(&self, repo: &Path, command: &[&str]) -> CanopusResult<CommandOutput> {
         self.run_command(repo, command)
     }
