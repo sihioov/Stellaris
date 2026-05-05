@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 BOT_PATH = Path(__file__).with_name("bot.py")
+BOT_DIR = str(BOT_PATH.parent)
 
 
 def load_bot(**env):
@@ -20,8 +21,6 @@ def load_bot(**env):
         "payloads",
         "projects_store",
         "tasks_store",
-        "canopus_client",
-        "discord_bot_under_test",
     ]:
         sys.modules.pop(name, None)
 
@@ -67,9 +66,11 @@ def load_bot(**env):
     sys.modules["dotenv"] = dotenv
 
     old_env = os.environ.copy()
+    old_path = sys.path.copy()
     os.environ.clear()
     os.environ.update(env)
     try:
+        sys.path.insert(0, BOT_DIR)
         spec = importlib.util.spec_from_file_location("discord_bot_under_test", BOT_PATH)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -78,6 +79,7 @@ def load_bot(**env):
     finally:
         os.environ.clear()
         os.environ.update(old_env)
+        sys.path[:] = old_path
 
 
 class DiscordBotConfigTests(unittest.TestCase):
