@@ -96,7 +96,7 @@ async fn codex_runtime_invokes_codex_exec_and_captures_message_log() {
         .any(|triple| triple == ["--ask-for-approval", "never", "exec"]));
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["--sandbox", "workspace-write"]));
+        .any(|pair| pair == ["--sandbox", "read-only"]));
     assert!(args
         .windows(2)
         .any(|pair| pair[0] == "--output-last-message"));
@@ -126,6 +126,11 @@ async fn coder_role_can_create_repo_changes_through_real_runtime_path() {
         .unwrap();
 
     assert!(repo.join("codex-real-output.txt").exists());
+    let args: Vec<String> =
+        serde_json::from_str(&fs::read_to_string(repo.join("codex-args.json")).unwrap()).unwrap();
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--sandbox", "workspace-write"]));
     assert_eq!(result.summary, "codex coder completed");
     assert_eq!(result.artifacts[0].kind, ArtifactKind::RuntimeLog);
     assert!(result.artifacts[0].content.contains("# Codex runtime"));
@@ -158,6 +163,40 @@ async fn codex_runtime_reports_failed_exec_as_runtime_error() {
     assert!(message.contains("# Codex runtime"));
     assert!(message.contains("status: 7"));
     assert!(message.contains("fake stderr"));
+
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
+async fn analyst_role_runs_read_only_to_preserve_clean_worktree_for_later_stages() {
+    let repo = test_repo("codex-runtime-analyst");
+    let script = fake_codex(&repo, false);
+    let agenda = Agenda::new_with_id("CANOPUS-1", "analyze before planning").unwrap();
+    let task = AgentTask::for_agenda(
+        "TASK-ANALYST",
+        &agenda,
+        AgentRole::Custom("analyst".to_string()),
+    );
+    let runtime =
+        CodexAgentRuntime::new(vec!["python3".to_string(), script.display().to_string()]).unwrap();
+
+    let result = runtime
+        .run(
+            &task,
+            &AgentContext {
+                repo_path: repo.clone(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let args: Vec<String> =
+        serde_json::from_str(&fs::read_to_string(repo.join("codex-args.json")).unwrap()).unwrap();
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--sandbox", "read-only"]));
+    assert!(result.message_log[0].content.contains("Do not edit files"));
 
     let _ = fs::remove_dir_all(repo);
 }

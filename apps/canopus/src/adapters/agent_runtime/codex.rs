@@ -88,7 +88,7 @@ impl AgentRuntime for CodexAgentRuntime {
             .arg("--cd")
             .arg(&context.repo_path)
             .arg("--sandbox")
-            .arg(&self.sandbox)
+            .arg(sandbox_for_role(&task.role, &self.sandbox))
             .arg("--output-last-message")
             .arg(&last_message_path);
         if let Some(model) = &self.model {
@@ -172,8 +172,12 @@ fn codex_prompt(task: &AgentTask, prior_artifacts: &[Artifact]) -> String {
         }
         AgentRole::Custom(name) => match name.as_str() {
             "analyzer" => "Act as the Canopus analyzer. Diagnose the task and report concrete findings. Do not edit files.",
-            "tester" => "Act as the Canopus tester. Run or describe the smallest useful validation for the change.",
-            _ => "Act as the requested Canopus agent role. Keep output concrete and scoped.",
+            "analyst" => "Act as the Canopus analyst. Analyze the current request and repository context. Do not edit files.",
+            "tester" => "Act as the Canopus tester. Run or describe the smallest useful validation for the change. Do not edit files unless the task explicitly requires test creation.",
+            "security_auditor" => "Act as the Canopus security auditor. Identify security risks and recommendations. Do not edit files.",
+            "researcher" => "Act as the Canopus researcher. Gather repository-local findings and recommendations. Do not edit files.",
+            "test_writer" => "Act as the Canopus test writer. Add or update focused tests for the requested behavior.",
+            _ => "Act as the requested Canopus agent role. Keep output concrete and scoped. Do not edit files unless this role explicitly owns implementation.",
         },
     };
 
@@ -201,6 +205,14 @@ fn codex_prompt(task: &AgentTask, prior_artifacts: &[Artifact]) -> String {
         "\nCanopus completion contract:\n- Stay inside this repository.\n- Preserve existing project boundaries and safety gates.\n- Report what changed, what was verified, and any remaining risk.\n",
     );
     prompt
+}
+
+fn sandbox_for_role<'a>(role: &AgentRole, write_sandbox: &'a str) -> &'a str {
+    match role {
+        AgentRole::Coder => write_sandbox,
+        AgentRole::Custom(name) if name == "test_writer" => write_sandbox,
+        _ => "read-only",
+    }
 }
 
 fn artifact_kind_for_role(role: &AgentRole) -> ArtifactKind {
