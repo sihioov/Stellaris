@@ -43,12 +43,12 @@ cargo test -p canopus --test v1_smoke              # green
 구현 증거:
 
 - PR-B: `apps/canopus/src/core/types.rs`, `apps/canopus/tests/mock_agent_runtime.rs`
-- PR-C1: `apps/europa/canopus_client.py`, `apps/europa/bot.py`, `apps/europa/test_bot_config.py`
+- PR-C1: `apps/europa/canopus_client.py`, `apps/europa/europa.py`, `apps/europa/test_bot_config.py`
 - PR-C2: `apps/canopus/tests/v1_smoke.rs`, `.github/workflows/ci.yml`
 - PR-C3: `docs/v1-operator-runbook.md`, `docs/p0-local-dry-run-runbook.md`
 - PR-C4: `scripts/validate-read-only.ps1`, `start-pipeline.ps1`, `apps/canopus/tests/validate_read_only_script.rs`
 - PR-C5: `apps/canopus/src/cli/finalize.rs`, `apps/canopus/tests/p0_local_dry_run_loop.rs`, `apps/canopus/tests/v1_smoke.rs`
-- PR-C6: `apps/europa/bot.py`, `apps/europa/payloads.py`, `apps/europa/test_bot_config.py`
+- PR-C6: `apps/europa/europa.py`, `apps/europa/payloads.py`, `apps/europa/test_bot_config.py`
 
 Known validation gap: GitHub Actions remote CI green은 이 로컬 확인에서 직접 증명하지 않았다. `.github/workflows/ci.yml`의 PR/schedule job 구성과 동일한 로컬 명령은 green이다.
 
@@ -81,7 +81,7 @@ Known validation gap: GitHub Actions remote CI green은 이 로컬 확인에서 
 - **A2.** `Agenda::from_github_issue(owner, repo, number, request)` 와 같은 source-aware 생성자 추가. agenda_id를 `"gh-{owner}-{repo}-{number}"` 형식으로 결정론적 생성 (`derive_run_identity` 의존, sanitize 결과 안정성 확인).
 - **A3.** 호출자 변경:
   - `apps/canopus/src/cli/submit.rs` — `--github-issue-number` 인자가 있을 때 `Agenda::from_github_issue` 사용
-  - `apps/europa/bot.py` — `!run`(GitHub Issue 컨텍스트 있을 때) 및 `!propose-approve`/`!propose-*` 핸들러에서 GitHub Issue 식별자 기반 agenda_id 전달
+  - `apps/europa/europa.py` — `!run`(GitHub Issue 컨텍스트 있을 때) 및 `!propose-approve`/`!propose-*` 핸들러에서 GitHub Issue 식별자 기반 agenda_id 전달
 - **A4.** Serde 호환: 기존 `source: "cli"` 직렬화 read 호환을 위한 default/migrate 처리 (loose deserialize).
 - **A5.** 회귀 테스트: 동일 GitHub Issue 입력에서 동일 agenda_id 생성, 다른 source 입력에서는 다른 ID. CLI/GitHub source 모두 round-trip 직렬화 통과.
 - **A6.** `cargo test -p canopus` green, `cargo clippy --all-targets -- -D warnings` green.
@@ -137,7 +137,7 @@ Known validation gap: GitHub Actions remote CI green은 이 로컬 확인에서 
 
 ### PR-C6. Discord !show 식별성 강화
 
-- **C6-1.** `apps/europa/bot.py:562-582` `!show` 링크 섹션에 추가:
+- **C6-1.** `apps/europa/europa.py:562-582` `!show` 링크 섹션에 추가:
   - `discord_channel_id`
   - `discord_message_id`
   - finalize record 경로 (`<state>/runs/<run_id>-finalize.txt`)
@@ -163,7 +163,7 @@ Known validation gap: GitHub Actions remote CI green은 이 로컬 확인에서 
 - `apps/canopus/src/cli/{mod.rs, submit.rs, finalize.rs, args.rs}`
 - `apps/canopus/src/adapters/{github/client.rs, agent_runtime/{command.rs, mod.rs}, artifact_store/local_file.rs, tool_gateway/local.rs}`
 - `apps/canopus/tests/{p0_local_dry_run_loop.rs, github_project_v2.rs, v1_smoke.rs(신규)}`
-- `apps/europa/{bot.py, payloads.py, config.py, test_bot_config.py}`
+- `apps/europa/{europa.py, payloads.py, config.py, test_bot_config.py}`
 - `ton618/src/main.rs`
 - `laniakea/src/{worker.rs, handlers/custom.rs}`
 - `dysonsphere/src/{discovery/mod.rs, db/task_table_file.rs, status.rs, message.rs}`

@@ -35,7 +35,7 @@ Tasks flow through these statuses:
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # then fill in your DISCORD_BOT_TOKEN
-python bot.py
+python europa.py
 ```
 
 ## Environment Variables
@@ -65,7 +65,7 @@ python bot.py
 Example local echo backend for development:
 
 ```bash
-ASK_COMMAND="python3 -c 'import sys; print(\"Answer:\", sys.stdin.read())'" python3 bot.py
+ASK_COMMAND="python3 -c 'import sys; print(\"Answer:\", sys.stdin.read())'" python3 europa.py
 ```
 
 ## Shared GitHub-integrated v1 path

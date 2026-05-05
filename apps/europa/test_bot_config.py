@@ -7,7 +7,7 @@ import types
 import unittest
 from pathlib import Path
 
-BOT_PATH = Path(__file__).with_name("bot.py")
+BOT_PATH = Path(__file__).with_name("europa.py")
 BOT_DIR = str(BOT_PATH.parent)
 
 

@@ -41,7 +41,7 @@ The long-term path is `surfaces/europa/`, but that move is intentionally deferre
 - `spec/europa-policy-migration.md` — Trigger: policy mutation 함수 6번째 추가 직전 또는 2026-Q3.
 - `spec/europa-task-store-via-canopus.md` — Trigger: dysonsphere schema 변경 PR 또는 spec 1 머지 후 2주 이내.
 - `spec/europa-surface-move.md` — Trigger: europa 외 두 번째 surface PR 작성 시점 또는 2026-12-31.
-- `spec/europa-handler-split.md` — Trigger: bot.py 800줄 초과 시 자동 trigger.
+- `spec/europa-handler-split.md` — Trigger: europa.py 800줄 초과 시 자동 trigger.
 - `spec/boundary-enforcement-ci.md` — Trigger: spec 1 또는 spec 2 머지 후 1 sprint 이내.
 - `spec/canopus-discord-notify-extraction.md` — Trigger: europa stable 운영 후 또는 두 번째 surface 추가 시점, 늦어도 2026-Q4.
 

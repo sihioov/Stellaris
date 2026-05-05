@@ -10,7 +10,7 @@ Stellaris is a Rust workspace for distributed task processing. Core crates live 
 - `cargo fmt --all -- --check` — verify Rust formatting before review.
 - `cargo clippy --workspace --all-targets -- -D warnings` — enforce lint cleanliness.
 - `cargo run -p ton618`, `cargo run -p laniakea`, `cargo run -p hubble`, `cargo run -p kepler` — run individual services.
-- `python3 -m py_compile apps/europa/bot.py` — syntax-check the Discord bot.
+- `python3 -m py_compile apps/europa/europa.py` — syntax-check the Discord bot.
 
 ## Coding Style & Naming Conventions
 Use Rust 2021 conventions, `rustfmt`, and clear module boundaries. Prefer trait-based abstractions in shared crates and keep Canopus-specific workflow logic inside `apps/canopus`. Use cosmic component names consistently: Dysonsphere for shared contracts, TON618 for scheduling, Laniakea for workers, Hubble/Kepler for discovery. Python code in `apps/europa` should stay small, explicit, and configuration-driven.

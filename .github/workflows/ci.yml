@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Compile Discord bot
-        run: python3 -m py_compile apps/europa/bot.py
+        run: python3 -m py_compile apps/europa/europa.py
 
       - name: Run Discord bot config tests
         run: python3 -m unittest apps/europa/test_bot_config.py

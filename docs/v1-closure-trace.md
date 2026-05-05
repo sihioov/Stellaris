@@ -55,7 +55,7 @@
 - **갭 2 runbook 보강**: `.env.example` 23개 변수 vs runbook 5개 언급. validate-read-only / live mutation 전환 절차, 실패 복구, V2 진입 절차 부재. 강도 Strong. (Lane 1 갭 5와 부분 수렴)
 - **갭 3 live mutation gate 검증 절차**: `start-pipeline.ps1:76` gate 0 고정. dry-run vs live 자동 비교 wrapper 없음. rollback 경로 없음. 강도 Strong, V2 차단. **단 사용자 결정상 mock runtime swap 이후 처리되는 V1 마지막 단계 작업**.
 - **갭 4 regression 신호 자동화**: `.github/workflows/ci.yml:3-5` push/pull_request만, schedule 트리거 없음, smoke harness CI 미통합. 강도 Moderate. (Lane 1 갭 1과 수렴)
-- **갭 5 Discord artifact visibility**: `apps/europa/bot.py:562-582` `discord_channel_id`/`discord_message_id` 노출 안 됨. finalize record 경로 패턴(`<task-id>-finalize.txt`) 탐색 미보장. 강도 Weak-Moderate.
+- **갭 5 Discord artifact visibility**: `apps/europa/europa.py:562-582` `discord_channel_id`/`discord_message_id` 노출 안 됨. finalize record 경로 패턴(`<task-id>-finalize.txt`) 탐색 미보장. 강도 Weak-Moderate.
 
 ## Evidence Against / Missing Evidence
 

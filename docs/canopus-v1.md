@@ -110,7 +110,7 @@ Before changing Canopus behavior, run:
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-python3 -m py_compile apps/europa/bot.py
+python3 -m py_compile apps/europa/europa.py
 python3 -m unittest apps/europa/test_bot_config.py
 ```
 
