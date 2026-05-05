@@ -88,6 +88,17 @@ async fn watch_and_explicit_finalize_share_idempotent_dry_run_record() {
     assert!(watch_record.contains("finalize mode: DryRun"));
     assert!(watch_record.contains("agenda_id: agenda-p0-1"));
     assert!(watch_record.contains("dry-run: skipped git add/commit/push"));
+    let delivery_gate_path = state.join("runs").join("agenda-p0-1-delivery-gate.json");
+    assert!(
+        delivery_gate_path.exists(),
+        "watch must create {}",
+        delivery_gate_path.display()
+    );
+    let delivery_gate: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&delivery_gate_path).unwrap()).unwrap();
+    assert_eq!(delivery_gate["status"], "Denied");
+    assert_eq!(delivery_gate["discord_approved"], true);
+    assert_eq!(delivery_gate["pr_gate_enabled"], false);
 
     cli::run(vec![
         "canopus".to_string(),
@@ -124,9 +135,17 @@ async fn watch_and_explicit_finalize_share_idempotent_dry_run_record() {
     .unwrap();
     let second_watch_record = fs::read_to_string(&finalize_path).unwrap();
     let modified_after_second_watch = fs::metadata(&finalize_path).unwrap().modified().unwrap();
+    let delivery_gate_after_second_watch = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(&delivery_gate_path).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         explicit_record, second_watch_record,
         "second watch tick must preserve an existing finalize record"
+    );
+    assert_eq!(
+        delivery_gate, delivery_gate_after_second_watch,
+        "second watch tick must preserve an existing delivery gate sidecar"
     );
     assert_eq!(
         modified_before_second_watch, modified_after_second_watch,

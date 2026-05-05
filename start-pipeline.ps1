@@ -35,6 +35,7 @@ if ($DryRun) {
     Write-Host "TON618: cargo run -p ton618"
     Write-Host "LANIAKEA: LANIAKEA_SOURCE=file LANIAKEA_FILE_PATH=$TASKS_JSON CANOPUS_REPO_PATH=$REPO_ROOT CANOPUS_STATE_PATH=$REPO_ROOT\.canopus cargo run -p laniakea"
     Write-Host "CANOPUS WATCH/FINALIZER: CANOPUS_REPO=$REPO_ROOT CANOPUS_STATE=$REPO_ROOT\.canopus CANOPUS_ENABLE_GITHUB=0 CANOPUS_ENABLE_LIVE_MUTATIONS=0 canopus watch $TASKS_JSON"
+    Write-Host "VALIDATE-READ-ONLY: scripts\validate-read-only.ps1 (skips gracefully when GitHub credentials/project IDs are missing)"
     Write-Host "KEPLER: REPO_PATH=$REPO_ROOT cargo run -p kepler"
     Write-Host "DISCORD BOT: python bot.py (requires DISCORD_BOT_TOKEN only outside -DryRun)"
     Write-Host "Dry-run safety: no GitHub token, Discord token, push, PR creation, GitHub Issue mutation, or GitHub Project mutation is required or reached."
@@ -51,6 +52,14 @@ if ($LASTEXITCODE -ne 0) {
 $env:PATH = "$REPO_ROOT\target\release;$env:PATH"
 
 Write-Host "🚀 Stellaris 파이프라인 시작..." -ForegroundColor Green
+
+$validateReadOnly = Join-Path $REPO_ROOT "scripts\validate-read-only.ps1"
+if (Test-Path $validateReadOnly) {
+    & $validateReadOnly -Repo $REPO_ROOT -State (Join-Path $REPO_ROOT ".canopus")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ validate-read-only probe failed" -ForegroundColor Red; exit $LASTEXITCODE
+    }
+}
 
 # TON618
 Start-Process powershell -ArgumentList @(

@@ -278,9 +278,43 @@ class DiscordBotConfigTests(unittest.TestCase):
             stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
             self.assertEqual(stored["meta"]["approval_state"], "approved")
 
+    def test_promote_pending_proposal_with_intake_records_success_metadata(self):
+        bot = load_bot()
+        task = {
+            "task_id": "discord-proposal",
+            "payload": json.dumps({"request": "candidate"}),
+            "meta": {"status": "PendingProposal"},
+        }
+        intake = {
+            "github_issue_number": 42,
+            "github_issue_url": "https://github.test/acme/demo/issues/42",
+            "github_project_item_id": "PVTI_1",
+            "ignored": "not copied",
+        }
 
-if __name__ == "__main__":
-    unittest.main()
+        bot.promote_pending_proposal_with_intake(task, intake)
+
+        payload = json.loads(task["payload"])
+        self.assertEqual(payload["proposal_intake_state"], "succeeded")
+        self.assertIsNotNone(payload["proposal_intake_attempted_at"])
+        self.assertEqual(payload["github_issue_number"], 42)
+        self.assertEqual(payload["github_project_item_id"], "PVTI_1")
+        self.assertNotIn("ignored", payload)
+        self.assertEqual(task["meta"]["proposal_intake_state"], "succeeded")
+
+    def test_promote_pending_proposal_without_intake_marks_not_required(self):
+        bot = load_bot()
+        task = {
+            "task_id": "local-proposal",
+            "payload": json.dumps({"request": "candidate"}),
+            "meta": {"status": "PendingProposal"},
+        }
+
+        bot.promote_pending_proposal_with_intake(task, None)
+
+        payload = json.loads(task["payload"])
+        self.assertNotIn("proposal_intake_state", payload)
+        self.assertEqual(task["meta"]["proposal_intake_state"], "not_required")
 
 class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_register_github_project_uses_canopus_json_boundary(self):
@@ -378,3 +412,135 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             payload = json.loads(stored["payload"])
             self.assertEqual(payload["proposal_intake_state"], "failed")
             self.assertTrue(any("work-intake 실패" in msg for msg in ctx.sent))
+
+    async def test_propose_approve_happy_path_transitions_to_pending(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects(
+                {
+                    "projects": {
+                        "10": {
+                            "name": "demo",
+                            "repo_path": "/repo",
+                            "github_project_id": "PVT_1",
+                        }
+                    }
+                }
+            )
+            task = {
+                "task_id": "discord-proposal",
+                "payload": json.dumps(
+                    {
+                        "request": "candidate",
+                        "agenda_id": "agenda-discord-proposal",
+                        "discord_message_url": "https://discord.test/message",
+                    }
+                ),
+                "meta": {"status": "PendingProposal"},
+            }
+            tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+
+            async def succeed_intake(project, task_id, agenda_id, request, message_url):
+                self.assertEqual(project["github_project_id"], "PVT_1")
+                self.assertEqual(task_id, "discord-proposal")
+                self.assertEqual(agenda_id, "agenda-discord-proposal")
+                self.assertEqual(request, "candidate")
+                self.assertEqual(message_url, "https://discord.test/message")
+                return {
+                    "github_issue_number": 42,
+                    "github_issue_url": "https://github.test/acme/demo/issues/42",
+                    "github_project_item_id": "PVTI_1",
+                }, None
+
+            bot.intake_github_work = succeed_intake
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(
+                        id=2,
+                        name="development",
+                        category=types.SimpleNamespace(id=10),
+                    )
+                    self.message = types.SimpleNamespace(id=3)
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_propose_approve(ctx, task_id="discord-proposal")
+
+            stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            self.assertEqual(stored["meta"]["status"], "Pending")
+            self.assertEqual(stored["meta"]["proposal_intake_state"], "succeeded")
+            payload = json.loads(stored["payload"])
+            self.assertEqual(payload["proposal_intake_state"], "succeeded")
+            self.assertEqual(payload["github_issue_number"], 42)
+            self.assertEqual(payload["github_project_item_id"], "PVTI_1")
+            self.assertTrue(any("후보 승인됨" in msg for msg in ctx.sent))
+
+    async def test_show_includes_discord_identity_and_finalize_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".canopus"
+            runs = state / "runs"
+            runs.mkdir(parents=True)
+            (runs / "agenda-discord-show-finalize.txt").write_text("finalized\n", encoding="utf-8")
+            (runs / "agenda-discord-show-delivery-gate.json").write_text(
+                '{"status":"Denied"}\n',
+                encoding="utf-8",
+            )
+            bot = load_bot(CANOPUS_STATE_PATH=str(state))
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+            task = {
+                "task_id": "discord-show",
+                "task_type": {"Custom": "canopus.agent"},
+                "payload": json.dumps(
+                    {
+                        "request": "show artifacts",
+                        "agenda_id": "agenda-discord-show",
+                        "discord_channel_id": "2",
+                        "discord_message_id": "3",
+                    }
+                ),
+                "meta": {"status": "Processed"},
+            }
+            tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(
+                        id=2,
+                        name="development",
+                        category=types.SimpleNamespace(id=10),
+                    )
+                    self.message = types.SimpleNamespace(id=3)
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_show(ctx, task_id="discord-show")
+
+            self.assertEqual(len(ctx.sent), 1)
+            output = ctx.sent[0]
+            self.assertIn("discord_channel_id: 2", output)
+            self.assertIn("discord_message_id: 3", output)
+            self.assertIn("agenda-discord-show-finalize.txt", output)
+            self.assertIn("agenda-discord-show-delivery-gate.json", output)
+
+
+if __name__ == "__main__":
+    unittest.main()

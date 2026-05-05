@@ -70,6 +70,7 @@ impl AgentRuntime for CommandAgentRuntime {
                 kind: ArtifactKind::RuntimeLog,
                 content,
             }],
+            message_log: Vec::new(),
         })
     }
 }

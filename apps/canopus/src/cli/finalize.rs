@@ -1,6 +1,7 @@
 use crate::adapters::github::GitHubClient;
 use crate::adapters::tool_gateway::LocalToolGateway;
 use crate::cli::args::{FinalizeArgs, WatchArgs};
+use crate::cli::commands::delivery_finalize::DeliveryGateReport;
 use crate::core::{derive_run_identity, CanopusError, CanopusResult};
 use crate::ports::ToolGateway;
 use std::fs;
@@ -25,6 +26,14 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                     let run_id = derive_run_identity(Some(&task.task_id), None)?;
                     let finalize_path = finalize_record_path(&parsed.state, &run_id);
                     if finalize_path.exists() {
+                        if let Err(e) =
+                            persist_delivery_gate_report_if_absent(&parsed.state, &run_id)
+                        {
+                            log::error!(
+                                "[watch] delivery gate sidecar persist failed {}: {e}",
+                                task.task_id
+                            );
+                        }
                         log::info!(
                             "[watch] finalize record exists; skipping {} ({})",
                             task.task_id,
@@ -46,7 +55,9 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                     .await
                     .and_then(|output| {
                         persist_finalize_record_if_absent(&parsed.state, &run_id, &output)
-                    }) {
+                    })
+                    .and_then(|()| persist_delivery_gate_report_if_absent(&parsed.state, &run_id))
+                    {
                         Ok(()) => log::info!(
                             "[watch] finalize record persisted for {} ({})",
                             task.task_id,
@@ -89,6 +100,7 @@ pub(crate) async fn finalize(args: &[String]) -> CanopusResult<()> {
 
     let state = parsed.state.unwrap_or_else(|| parsed.repo.join(".canopus"));
     persist_finalize_record(&state, &run_id, &output)?;
+    persist_delivery_gate_report_if_absent(&state, &run_id)?;
     println!("{output}");
     Ok(())
 }
@@ -199,6 +211,27 @@ fn persist_finalize_record_if_absent(
 
 fn finalize_record_path(state: &Path, run_id: &str) -> PathBuf {
     state.join("runs").join(format!("{run_id}-finalize.txt"))
+}
+
+fn persist_delivery_gate_report_if_absent(state: &Path, run_id: &str) -> CanopusResult<()> {
+    let path = delivery_gate_record_path(state, run_id);
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(runs_dir) = path.parent() {
+        fs::create_dir_all(runs_dir)?;
+    }
+    let report = DeliveryGateReport::from_env(true, false, false);
+    let json = serde_json::to_vec_pretty(&report)
+        .map_err(|e| CanopusError::InvalidInput(format!("delivery gate JSON failed: {e}")))?;
+    fs::write(path, json)?;
+    Ok(())
+}
+
+fn delivery_gate_record_path(state: &Path, run_id: &str) -> PathBuf {
+    state
+        .join("runs")
+        .join(format!("{run_id}-delivery-gate.json"))
 }
 
 pub(crate) fn live_mutations_enabled() -> bool {

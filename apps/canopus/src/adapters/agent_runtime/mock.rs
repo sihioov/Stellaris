@@ -23,6 +23,7 @@ impl AgentRuntime for MockAgentRuntime {
                     kind: ArtifactKind::Plan,
                     content: format!("# Mock plan\n\n{}\n", task.prompt),
                 }],
+                message_log: Vec::new(),
             }),
             AgentRole::Coder => {
                 let context_summary = prior_artifacts
@@ -48,6 +49,7 @@ impl AgentRuntime for MockAgentRuntime {
                         kind: ArtifactKind::RuntimeLog,
                         content: format!("Wrote {}\n", output.display()),
                     }],
+                    message_log: Vec::new(),
                 })
             }
             AgentRole::Reviewer => {
@@ -72,6 +74,7 @@ impl AgentRuntime for MockAgentRuntime {
                         kind: ArtifactKind::Review,
                         content: review_content,
                     }],
+                    message_log: Vec::new(),
                 })
             }
             AgentRole::Custom(ref name) => Ok(AgentRunResult {
@@ -82,6 +85,7 @@ impl AgentRuntime for MockAgentRuntime {
                     kind: ArtifactKind::RuntimeLog,
                     content: format!("# Mock {}\n\n{}\n", name, task.prompt),
                 }],
+                message_log: Vec::new(),
             }),
         }
     }

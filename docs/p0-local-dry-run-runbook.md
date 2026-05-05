@@ -2,6 +2,10 @@
 
 This runbook proves the local self-hosting loop without live mutation.
 
+For the full V1 operator checklist, environment key table, validate-read-only
+probe, failure recovery, and V2 handoff notes, see
+[`docs/v1-operator-runbook.md`](v1-operator-runbook.md).
+
 ## Environment
 
 Use a deterministic command runtime for local evidence:

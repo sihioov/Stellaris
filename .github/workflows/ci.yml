@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"
 
 jobs:
   rust:
@@ -61,3 +63,16 @@ jobs:
 
       - name: Run Discord bot config tests
         run: python3 -m unittest apps/europa/test_bot_config.py
+
+  v1-smoke:
+    name: V1 smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run V1 smoke harness
+        run: cargo test -p canopus --test v1_smoke

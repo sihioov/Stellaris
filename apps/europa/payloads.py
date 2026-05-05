@@ -255,6 +255,8 @@ def _artifact_paths(project: dict | None, task: dict) -> list[str]:
         candidates.extend([
             os.path.join(state_root, "artifacts", lookup_id),
             os.path.join(state_root, "runs", f"{lookup_id}.json"),
+            os.path.join(state_root, "runs", f"{lookup_id}-finalize.txt"),
+            os.path.join(state_root, "runs", f"{lookup_id}-delivery-gate.json"),
         ])
     found = []
     for path in candidates:

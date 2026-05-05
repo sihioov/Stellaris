@@ -567,6 +567,8 @@ async def cmd_show(ctx, task_id: str = None):
     links = []
     for key in (
         "agenda_id",
+        "discord_channel_id",
+        "discord_message_id",
         "github_issue",
         "github_issue_url",
         "github_issue_create_url",
