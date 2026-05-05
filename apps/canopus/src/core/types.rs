@@ -1,15 +1,48 @@
 use crate::core::error::{CanopusError, CanopusResult};
+use crate::core::run_identity::derive_run_identity;
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agenda {
     pub id: String,
     pub request: String,
-    pub source: String,
+    pub source: AgendaSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgendaSource {
+    Cli,
+    GitHubIssue {
+        owner: String,
+        repo: String,
+        number: u64,
+    },
+    GitHubProject {
+        project_url: String,
+        item_id: String,
+    },
+}
+
+impl AgendaSource {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            AgendaSource::Cli => "cli",
+            AgendaSource::GitHubIssue { .. } => "github_issue",
+            AgendaSource::GitHubProject { .. } => "github_project",
+        }
+    }
 }
 
 impl Agenda {
     pub fn new_with_id(id: impl Into<String>, request: impl Into<String>) -> CanopusResult<Self> {
+        Self::new_with_source(id, request, AgendaSource::Cli)
+    }
+
+    pub fn new_with_source(
+        id: impl Into<String>,
+        request: impl Into<String>,
+        source: AgendaSource,
+    ) -> CanopusResult<Self> {
         let request = request.into();
         if request.trim().is_empty() {
             return Err(CanopusError::InvalidInput(
@@ -20,9 +53,77 @@ impl Agenda {
         Ok(Self {
             id: id.into(),
             request: request.trim().to_string(),
-            source: "cli".to_string(),
+            source,
         })
     }
+
+    /// Construct an agenda whose id is deterministically derived from a GitHub Issue identity.
+    ///
+    /// The same `(owner, repo, number)` always produces the same id (run through
+    /// [`derive_run_identity`] for consistent sanitisation), so re-processing the
+    /// same Issue stays idempotent — the V2 GitHub-Issue-as-ledger bridge.
+    pub fn from_github_issue(
+        owner: impl Into<String>,
+        repo: impl Into<String>,
+        number: u64,
+        request: impl Into<String>,
+    ) -> CanopusResult<Self> {
+        let owner = owner.into();
+        let repo = repo.into();
+        let id = deterministic_agenda_id_for_github_issue(&owner, &repo, number)?;
+        Self::new_with_source(
+            id,
+            request,
+            AgendaSource::GitHubIssue {
+                owner,
+                repo,
+                number,
+            },
+        )
+    }
+
+    /// Construct an agenda whose id is deterministically derived from a GitHub Project v2 item.
+    pub fn from_github_project(
+        project_url: impl Into<String>,
+        item_id: impl Into<String>,
+        request: impl Into<String>,
+    ) -> CanopusResult<Self> {
+        let project_url = project_url.into();
+        let item_id = item_id.into();
+        let id = deterministic_agenda_id_for_github_project(&project_url, &item_id)?;
+        Self::new_with_source(
+            id,
+            request,
+            AgendaSource::GitHubProject {
+                project_url,
+                item_id,
+            },
+        )
+    }
+}
+
+/// Build a deterministic agenda id from a GitHub Issue identity.
+///
+/// Reuses [`derive_run_identity`] so the result follows the same sanitisation rules
+/// every other run identifier in canopus uses (lowercase ASCII alphanumerics joined
+/// by dashes). Exposed publicly so external callers (Europa bot, future adapters)
+/// can produce ids compatible with canopus' run/agenda lookup.
+pub fn deterministic_agenda_id_for_github_issue(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> CanopusResult<String> {
+    let raw = format!("gh-{owner}-{repo}-{number}");
+    derive_run_identity(Some(&raw), None)
+}
+
+/// Build a deterministic agenda id from a GitHub Project v2 item identity.
+pub fn deterministic_agenda_id_for_github_project(
+    project_url: &str,
+    item_id: &str,
+) -> CanopusResult<String> {
+    let raw = format!("ghp-{project_url}-{item_id}");
+    derive_run_identity(Some(&raw), None)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
