@@ -1,6 +1,10 @@
 .worktrees/
 .env
 **/.env
+.env.swp
+*.swp
+.venv/
+**/.venv/
 tasks.json
 .canopus/
 .claude/
