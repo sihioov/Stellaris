@@ -574,6 +574,40 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["github_project_item_id"], "PVTI_1")
             self.assertTrue(any("후보 승인됨" in msg for msg in ctx.sent))
 
+    async def test_worktree_command_reports_clean_registered_repo(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            import subprocess
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": str(repo)}}})
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = types.SimpleNamespace(id=1)
+                    self.channel = types.SimpleNamespace(
+                        id=2,
+                        name="development",
+                        category=types.SimpleNamespace(id=10),
+                    )
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_worktree(ctx)
+
+            self.assertEqual(len(ctx.sent), 1)
+            self.assertIn("Worktree 상태", ctx.sent[0])
+            self.assertIn("clean", ctx.sent[0])
+
     async def test_show_includes_discord_identity_and_finalize_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / ".canopus"

@@ -145,6 +145,51 @@ def is_git_repo_path(repo_path: str) -> bool:
     return os.path.exists(os.path.join(repo_path, ".git"))
 
 
+def git_command(repo_path: str, *args: str) -> tuple[int, str, str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, "", str(exc)
+
+
+def worktree_status_text(repo_path: str) -> str:
+    if not is_git_repo_path(repo_path):
+        return f"❌ Git worktree가 아닙니다: `{repo_path}`"
+
+    _, root, _ = git_command(repo_path, "rev-parse", "--show-toplevel")
+    _, branch, _ = git_command(repo_path, "branch", "--show-current")
+    _, head, _ = git_command(repo_path, "rev-parse", "--short", "HEAD")
+    _, git_common_dir, _ = git_command(repo_path, "rev-parse", "--git-common-dir")
+    status_code, status, status_err = git_command(repo_path, "status", "--short")
+
+    if status_code != 0:
+        dirty_text = f"⚠️ status 확인 실패: {status_err or '(unknown)'}"
+    elif not status:
+        dirty_text = "✅ clean"
+    else:
+        lines = status.splitlines()
+        preview = "\n".join(lines[:10])
+        if len(lines) > 10:
+            preview += f"\n… +{len(lines) - 10} more"
+        dirty_text = f"⚠️ dirty ({len(lines)} changed)\n```text\n{preview}\n```"
+
+    branch_text = branch or "(detached)"
+    return (
+        "🧰 **Worktree 상태**\n"
+        f"**Repo**: `{root or repo_path}`\n"
+        f"**Branch**: `{branch_text}`\n"
+        f"**HEAD**: `{head or '?'}`\n"
+        f"**Git dir**: `{git_common_dir or '?'}`\n"
+        f"**Status**: {dirty_text}"
+    )
+
+
 # ── commands ──────────────────────────────────────────────────────────────────
 
 @bot.command(name="new-project")
@@ -630,6 +675,22 @@ async def cmd_show(ctx, task_id: str = None):
         f"**GitHub**:\n{link_text}\n"
         f"**Artifacts**:\n{artifact_text}"
     )
+
+
+
+@bot.command(name="worktree")
+async def cmd_worktree(ctx):
+    """Show registered repo/worktree git status without mutating it."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+
+    category_id, project, tasks_path = get_category_context(ctx)
+    if project is None:
+        await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
+        return
+
+    await ctx.send(worktree_status_text(project.get("repo_path", "")))
 
 
 @bot.command(name="status")
