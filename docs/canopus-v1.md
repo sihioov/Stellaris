@@ -58,7 +58,7 @@ Canopus should keep all externally visible or destructive actions behind explici
 
 ### Dry-run and live gaps
 
-- Local validation uses the deterministic `MockAgentRuntime` and file-backed task tables.
+- Local validation can use the deterministic `MockAgentRuntime` and file-backed task tables, while real AI execution is available through `CANOPUS_AGENT_RUNTIME=codex`.
 - GitHub issue creation is disabled unless `CANOPUS_ENABLE_GITHUB=1`, `CANOPUS_ALLOW_GITHUB_MUTATION=1`, and the GitHub environment variables are present.
 - External mutations (`git push` and `gh pr create`) are dry-run by default. Set `CANOPUS_ENABLE_LIVE_MUTATIONS=1` only in an approved live environment.
 - GitHub Project v2 has no official mutation dry-run. Canopus therefore implements an application-level Project mode:
@@ -84,6 +84,20 @@ CANOPUS_ALLOW_GITHUB_MUTATION=0
 CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=0
 canopus watch tasks.json
 ```
+
+
+For live AI-backed development stages, switch the runtime to Codex CLI:
+
+```bash
+CANOPUS_AGENT_RUNTIME=codex
+# optional overrides:
+# CANOPUS_CODEX_COMMAND=codex
+# CANOPUS_CODEX_MODEL=gpt-5.5
+# CANOPUS_CODEX_PROFILE=<codex-profile>
+# CANOPUS_CODEX_SANDBOX=workspace-write
+```
+
+The Codex runtime invokes `codex exec --cd <repo> --sandbox <mode> --ask-for-approval never`, passes the Canopus role/task metadata through environment variables, sends prior artifacts in the prompt, and stores the final Codex response in Canopus artifacts/message logs. Keep GitHub push/PR/merge/deploy gates closed unless a separate live ramp-up explicitly opens them.
 
 `canopus watch` is the local finalizer runner: after approval marks a task `Processed`, it writes dry-run finalize records under `<repo>/.canopus/runs/<id>-finalize.txt`. The launcher exposes this process in `start-pipeline.ps1 -DryRun` and starts it in the non-`-DryRun` topology with live mutation gates disabled by default.
 - GitHub-backed v1 now includes strict-live registration/intake plus gated PR/merge/deploy contracts. Default verification remains offline/mock; live smoke remains opt-in with disposable resources, explicit credentials, and all mutation gates enabled.

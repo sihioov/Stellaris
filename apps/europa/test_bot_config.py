@@ -88,6 +88,13 @@ class DiscordBotConfigTests(unittest.TestCase):
         bot = load_bot(TASKS_JSON_PATH="/tmp/stellaris-tasks.json")
         self.assertEqual(bot.get_tasks_path(123), "/tmp/stellaris-tasks.json")
 
+    def test_git_repo_path_accepts_linked_worktree_git_file(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, ".git").write_text("gitdir: /tmp/example", encoding="utf-8")
+
+            self.assertTrue(bot.is_git_repo_path(tmp))
+
     def test_task_payload_includes_agenda_and_github_metadata(self):
         bot = load_bot(
             GITHUB_OWNER="acme",

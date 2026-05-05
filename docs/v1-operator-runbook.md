@@ -38,8 +38,12 @@ Copy `.env.example` to `.env` and keep defaults non-mutating unless a later live
 | `TASKS_JSON_PATH` | Yes | No | Shared queue file for Europa, TON618, and Laniakea. |
 | `LANIAKEA_SOURCE` | Yes | No | Use `file` for V1 closure. |
 | `LANIAKEA_FILE_PATH` | Yes | No | Same file as `TASKS_JSON_PATH`. |
-| `CANOPUS_AGENT_RUNTIME` | Optional | No | Set `command` to test command runtime; unset uses mock runtime. |
+| `CANOPUS_AGENT_RUNTIME` | Optional | No | `mock`/unset for deterministic mock, `command` for local command dry-runs, or `codex`/`ai` for real Codex CLI execution. |
 | `CANOPUS_AGENT_COMMAND` | Optional | No | Deterministic local command used by command runtime. |
+| `CANOPUS_CODEX_COMMAND` | Optional | No | Codex executable override; defaults to `codex`. |
+| `CANOPUS_CODEX_MODEL` | Optional | No | Optional model override passed to `codex exec --model`. |
+| `CANOPUS_CODEX_PROFILE` | Optional | No | Optional Codex config profile passed to `codex exec --profile`. |
+| `CANOPUS_CODEX_SANDBOX` | Optional | No | Optional Codex sandbox mode; defaults to `workspace-write`. |
 | `CANOPUS_REPO` | Optional | No | Repo path for `canopus watch`/`finalize`. |
 | `CANOPUS_STATE` | Optional | No | Canopus state directory, usually `.canopus`. |
 | `REPO_PATH` | Optional | No | Repo scanned by Kepler/Hubble-style discovery. |
@@ -143,14 +147,18 @@ The separate final ramp-up spec must define disposable resources, credentials, e
 
 ## 9. V2 entry procedure
 
-After V1 closure and the separate final ramp-up are complete, switch from mock runtime to command runtime for V2 handoff:
+After V1 closure and the separate final ramp-up are complete, switch from mock/command evidence to real Codex CLI execution for V2 handoff:
 
 ```bash
-export CANOPUS_AGENT_RUNTIME=command
-export CANOPUS_AGENT_COMMAND='<agent command that reads CANOPUS_* env and writes deterministic output>'
+export CANOPUS_AGENT_RUNTIME=codex
+# optional; defaults to `codex` from PATH
+export CANOPUS_CODEX_COMMAND=codex
+# optional model/profile/sandbox overrides
+export CANOPUS_CODEX_MODEL=gpt-5.5
+export CANOPUS_CODEX_SANDBOX=workspace-write
 ```
 
-Keep `CANOPUS_AGENT_RUNTIME` unset for V1 mock evidence. The `AgentRunResult.message_log` schema is reserved in V1; actual message persistence is V2 work.
+For deterministic offline evidence, keep using `CANOPUS_AGENT_RUNTIME=command` with `CANOPUS_AGENT_COMMAND='<agent command that reads CANOPUS_* env>'`, or leave the runtime unset for mock. The Codex runtime writes final responses to artifacts and persists a two-message `AgentRunResult.message_log` for auditability.
 
 ## 10. 2026-05-05 live Discord → GitHub intake slice
 

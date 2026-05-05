@@ -26,6 +26,7 @@ Authorization: set ALLOWED_USER_IDS=123456789,987654321 in env to restrict acces
 """
 import json
 import os
+import subprocess
 import uuid
 
 import discord
@@ -126,6 +127,24 @@ async def on_ready():
         print("[europa] WARNING: ALLOWED_USER_IDS not set — all users can run commands")
 
 
+def is_git_repo_path(repo_path: str) -> bool:
+    """Return true for normal Git repos and linked git worktrees."""
+    if not os.path.isdir(repo_path):
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "true":
+            return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return os.path.exists(os.path.join(repo_path, ".git"))
+
+
 # ── commands ──────────────────────────────────────────────────────────────────
 
 @bot.command(name="new-project")
@@ -176,8 +195,7 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
             steps.append(f"📂 디렉토리 생성: `{repo_path}`")
 
         # 2. git init (이미 git 레포면 skip)
-        git_dir = os.path.join(repo_path, ".git")
-        if os.path.isdir(git_dir):
+        if is_git_repo_path(repo_path):
             steps.append("🔧 Git 레포지토리 이미 존재 (init skip)")
         else:
             import subprocess
@@ -247,7 +265,7 @@ async def cmd_register(ctx, *, repo_path: str = None):
     if not os.path.isdir(repo_path):
         await ctx.send(f"❌ 경로가 존재하지 않습니다: `{repo_path}`\n신규 프로젝트라면 `!new-project <이름> <경로>` 를 사용하세요.")
         return
-    if not os.path.isdir(os.path.join(repo_path, ".git")):
+    if not is_git_repo_path(repo_path):
         await ctx.send(f"❌ Git 레포지토리가 아닙니다: `{repo_path}`\n`git init`을 먼저 실행하거나 `!new-project` 를 사용하세요.")
         return
     if not ctx.guild or not hasattr(ctx.channel, "category") or not ctx.channel.category:

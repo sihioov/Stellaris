@@ -1,4 +1,4 @@
-use crate::adapters::agent_runtime::{CommandAgentRuntime, MockAgentRuntime};
+use crate::adapters::agent_runtime::{CodexAgentRuntime, CommandAgentRuntime, MockAgentRuntime};
 use crate::adapters::artifact_store::LocalFileArtifactStore;
 use crate::adapters::github::{
     build_project_sync_plan, GitHubClient, GitHubProjectGates, GitHubProjectSyncConfig,
@@ -735,6 +735,7 @@ fn github_project_gates_from_env() -> GitHubProjectGates {
 
 fn selected_runtime() -> CanopusResult<Box<dyn AgentRuntime>> {
     match std::env::var("CANOPUS_AGENT_RUNTIME").as_deref() {
+        Ok("codex") | Ok("ai") => Ok(Box::new(CodexAgentRuntime::from_env()?)),
         Ok("command") => Ok(Box::new(CommandAgentRuntime::from_env().ok_or_else(
             || {
                 CanopusError::InvalidInput(

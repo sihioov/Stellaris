@@ -19,7 +19,7 @@ export CANOPUS_ENABLE_LIVE_MUTATIONS=0
 export CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=0
 ```
 
-The command runs locally for each Canopus role stage and writes inspectable runtime artifacts. Keep `CANOPUS_AGENT_RUNTIME` unset to use the mock runtime.
+The command runs locally for each Canopus role stage and writes inspectable runtime artifacts. Keep `CANOPUS_AGENT_RUNTIME` unset to use the mock runtime. Use `CANOPUS_AGENT_RUNTIME=codex` only when intentionally allowing real Codex CLI execution in a clean, gated repo.
 
 ## Launcher inspection
 
