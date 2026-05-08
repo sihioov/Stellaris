@@ -6,6 +6,9 @@
 .venv/
 **/.venv/
 tasks.json
+tasks.lock
+**/tasks.lock
+apps/europa/projects.json
 .canopus/
 .claude/
 .codex

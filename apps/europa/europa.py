@@ -485,8 +485,12 @@ async def cmd_run(ctx, *, request: str = None):
     agenda_id = f"agenda-{task_id}"
     work_intake, intake_error = await intake_github_work(project, task_id, agenda_id, request, build_discord_message_link(ctx))
     if intake_error:
-        await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
-        return
+        if os.environ.get("EUROPA_INTAKE_FAILURE_LOCAL_ONLY", "0") == "1":
+            await ctx.send(f"⚠️ GitHub intake 실패, 로컬로만 진행합니다: {intake_error}")
+            work_intake = None
+        else:
+            await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
+            return
     payload = build_task_payload(ctx, task_id, request, project, channel_type, work_intake)
     task = {
         "task_id": task_id,
@@ -612,17 +616,21 @@ async def cmd_propose_approve(ctx, task_id: str = None):
     )
     work_intake, intake_error = await intake_github_work(project, proposal["task_id"], agenda_id, request, payload.get("discord_message_url"))
     if intake_error:
-        update_task_status_locked(
-            tasks_path,
-            proposal["task_id"],
-            "propose-approve",
-            {"PendingProposal"},
-            "PendingProposal",
-            "PendingProposal",
-            lambda task: mark_proposal_intake_failed(task, intake_error),
-        )
-        await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
-        return
+        if os.environ.get("EUROPA_INTAKE_FAILURE_LOCAL_ONLY", "0") == "1":
+            await ctx.send(f"⚠️ GitHub intake 실패, 로컬로만 진행합니다: {intake_error}")
+            work_intake = None
+        else:
+            update_task_status_locked(
+                tasks_path,
+                proposal["task_id"],
+                "propose-approve",
+                {"PendingProposal"},
+                "PendingProposal",
+                "PendingProposal",
+                lambda task: mark_proposal_intake_failed(task, intake_error),
+            )
+            await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
+            return
     target, error = update_task_status_locked(
         tasks_path,
         proposal["task_id"],
