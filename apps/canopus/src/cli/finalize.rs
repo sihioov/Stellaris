@@ -1,6 +1,6 @@
 use crate::adapters::github::GitHubClient;
 use crate::adapters::tool_gateway::LocalToolGateway;
-use crate::cli::args::{FinalizeArgs, WatchArgs};
+use crate::cli::args::{derive_state_with_source, FinalizeArgs, WatchArgs};
 use crate::cli::commands::delivery_finalize::DeliveryGateReport;
 use crate::core::{derive_run_identity, CanopusError, CanopusResult};
 use crate::ports::ToolGateway;
@@ -22,10 +22,24 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
             Ok(tasks) if !tasks.is_empty() => {
                 for task in tasks {
                     let run_id = derive_run_identity(Some(&task.run_id), None)?;
-                    let finalize_path = finalize_record_path(&parsed.state, &run_id);
+                    let (task_state, state_source) =
+                        derive_state_with_source(task.repo_path.as_deref(), &parsed.state);
+                    log::info!(
+                        "[watch] finalize sidecar persist: {} (source={})",
+                        task_state.display(),
+                        state_source.as_str()
+                    );
+                    let finalize_path = finalize_record_path(&task_state, &run_id);
+                    // PR-B migration-window idempotency guard (plan §5.1 / §5.4):
+                    // when payload-derived state diverges from the watch-side
+                    // --state argument, a previous release may have persisted
+                    // the finalize sidecar at the legacy location. Honor it so
+                    // we never re-finalize during the migration window. Remove
+                    // this fallback one release after PR-B lands.
+                    let legacy_finalize_path = (parsed.state != task_state)
+                        .then(|| finalize_record_path(&parsed.state, &run_id));
                     if finalize_path.exists() {
-                        if let Err(e) =
-                            persist_delivery_gate_report_if_absent(&parsed.state, &run_id)
+                        if let Err(e) = persist_delivery_gate_report_if_absent(&task_state, &run_id)
                         {
                             log::error!(
                                 "[watch] delivery gate sidecar persist failed {}: {e}",
@@ -39,6 +53,28 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                         );
                         continue;
                     }
+                    if let Some(legacy) = legacy_finalize_path.as_ref().filter(|path| path.exists())
+                    {
+                        log::info!(
+                            "[watch] legacy finalize record present at {}; skipping {} (PR-B migration-window guard)",
+                            legacy.display(),
+                            task.task_id
+                        );
+                        if let Err(e) = backfill_finalize_record(legacy, &finalize_path) {
+                            log::warn!(
+                                "[watch] failed to backfill legacy finalize record to {}: {e}",
+                                finalize_path.display()
+                            );
+                        }
+                        if let Err(e) = persist_delivery_gate_report_if_absent(&task_state, &run_id)
+                        {
+                            log::error!(
+                                "[watch] delivery gate sidecar persist failed {}: {e}",
+                                task.task_id
+                            );
+                        }
+                        continue;
+                    }
 
                     log::info!("[watch] Processed 태스크 발견: {}", task.task_id);
                     let branch = format!("canopus/{run_id}");
@@ -46,11 +82,10 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                     match post_approval(repo, &branch, &run_id, None, &tools, FinalizeMode::DryRun)
                         .await
                         .and_then(|output| {
-                            persist_finalize_record_if_absent(&parsed.state, &run_id, &output)
+                            persist_finalize_record_if_absent(&task_state, &run_id, &output)
                         })
-                        .and_then(|()| {
-                            persist_delivery_gate_report_if_absent(&parsed.state, &run_id)
-                        }) {
+                        .and_then(|()| persist_delivery_gate_report_if_absent(&task_state, &run_id))
+                    {
                         Ok(()) => log::info!(
                             "[watch] finalize record persisted for {} ({})",
                             task.task_id,
@@ -293,6 +328,21 @@ fn persist_finalize_record_if_absent(
 
 fn finalize_record_path(state: &Path, run_id: &str) -> PathBuf {
     state.join("runs").join(format!("{run_id}-finalize.txt"))
+}
+
+/// PR-B migration-window helper: copy a legacy finalize record found under
+/// the watch-side `--state` to its payload-derived location, so subsequent
+/// watch loops short-circuit at `finalize_path.exists()` without re-checking
+/// the legacy path. No-op when target already exists. Plan §5.1 / §5.4.
+fn backfill_finalize_record(legacy: &Path, target: &Path) -> CanopusResult<()> {
+    if target.exists() {
+        return Ok(());
+    }
+    if let Some(runs_dir) = target.parent() {
+        fs::create_dir_all(runs_dir)?;
+    }
+    fs::copy(legacy, target)?;
+    Ok(())
 }
 
 fn persist_delivery_gate_report_if_absent(state: &Path, run_id: &str) -> CanopusResult<()> {
@@ -833,9 +883,18 @@ mod gate_tests {
 
         watch(&args).await.unwrap();
 
-        let record = fs::read_to_string(finalize_record_path(&state, "agenda-payload")).unwrap();
+        // PR-A A4: sidecar must land under <payload_repo>/.canopus, not the
+        // watch-side --state argument (plan §5.3 / §6.5).
+        let payload_state = payload_repo.join(".canopus");
+        let record =
+            fs::read_to_string(finalize_record_path(&payload_state, "agenda-payload")).unwrap();
         assert!(record.contains("payload.txt"));
         assert!(!record.contains("fallback.txt"));
+        assert!(
+            !finalize_record_path(&state, "agenda-payload").exists(),
+            "finalize record must NOT land under fallback --state when payload.repo_path is present"
+        );
+        let _ = fs::remove_dir_all(&payload_state);
         let _ = fs::remove_dir_all(state);
         let _ = fs::remove_dir_all(fallback_repo);
         let _ = fs::remove_dir_all(payload_repo);

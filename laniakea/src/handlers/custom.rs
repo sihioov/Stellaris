@@ -2,6 +2,7 @@ use dysonsphere::{
     error::{Result, StellarisError},
     message::{TaskMessage, TaskType},
 };
+use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -63,6 +64,25 @@ pub async fn handle(task: &TaskMessage, label: &str) -> Result<()> {
     run_canopus(task, role_mode).await
 }
 
+/// Public entry point used by integration tests in sibling crates (e.g.
+/// `apps/canopus/tests/multi_project_state_routing.rs` per plan §6.2 / PR-A
+/// A2). Hides the internal [`CanopusRoleMode`] enum behind a string label so
+/// the public surface stays minimal.
+pub fn canopus_submit_args_for_label(
+    task: &TaskMessage,
+    repo: &str,
+    state: &str,
+    label: &str,
+) -> Result<Vec<String>> {
+    let role_mode = CanopusRoleMode::from_label(label).ok_or_else(|| {
+        StellarisError::IoError(format!(
+            "unsupported custom task label `{label}` for task {}",
+            task.task_id
+        ))
+    })?;
+    Ok(canopus_submit_args(task, repo, state, role_mode))
+}
+
 fn canopus_submit_args(
     task: &TaskMessage,
     repo: &str,
@@ -80,18 +100,25 @@ fn canopus_submit_args(
     } else {
         metadata.request.as_str()
     };
-    let submit_repo = metadata
+    let payload_repo: Option<&str> = metadata
         .repo_path
         .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(repo);
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let submit_repo = payload_repo.unwrap_or(repo);
+    let (submit_state, state_source) = derive_submit_state(payload_repo, state);
+    log::info!(
+        "[submit] state_root resolved: {} (source={})",
+        submit_state,
+        state_source
+    );
 
     let mut args = vec![
         "submit".to_string(),
         "--repo".to_string(),
         submit_repo.to_string(),
         "--state".to_string(),
-        state.to_string(),
+        submit_state,
         "--agenda-id".to_string(),
         agenda_id.to_string(),
         "--task-id".to_string(),
@@ -185,6 +212,48 @@ fn push_optional_arg(args: &mut Vec<String>, flag: &str, value: Option<String>) 
     if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
         args.extend([flag.to_string(), value]);
     }
+}
+
+/// Derives the `--state` argument for `canopus submit` from the task
+/// payload's `repo_path` (plan §1.2 / §7 PR-A). When payload provides a repo
+/// and the candidate `<repo>/.canopus` is creatable + writable, returns it
+/// with `source=payload_repo`; otherwise returns `env_state` and emits a
+/// WARN line so operators can grep the cause (plan §5.5).
+///
+/// Mirrors `canopus::cli::derive_state_with_source` but operates on `&str`
+/// because laniakea builds CLI args. Cross-crate dependency is intentionally
+/// avoided to keep the dispatcher independent (plan principle #4 minimum
+/// diff; canopus already has `laniakea` as a dev-dep, so reversing the
+/// direction would create a cycle).
+fn derive_submit_state(payload_repo: Option<&str>, env_state: &str) -> (String, &'static str) {
+    if let Some(repo) = payload_repo {
+        let candidate = Path::new(repo).join(".canopus");
+        match probe_state_writable(&candidate) {
+            Ok(()) => {
+                let resolved = candidate
+                    .into_os_string()
+                    .into_string()
+                    .unwrap_or_else(|_| format!("{}/.canopus", repo.trim_end_matches('/')));
+                return (resolved, "payload_repo");
+            }
+            Err(err) => {
+                log::warn!(
+                    "[submit] state_root probe failed at {}/.canopus: {}; falling back to env_state",
+                    repo,
+                    err
+                );
+            }
+        }
+    }
+    (env_state.to_string(), "env_fallback")
+}
+
+fn probe_state_writable(candidate: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(candidate)?;
+    let probe = candidate.join(".write-probe");
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)?;
+    Ok(())
 }
 
 fn parse_canopus_metadata(payload: &str) -> CanopusMetadata {
@@ -616,5 +685,124 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--agenda-id", "UPSTREAM-42"]));
         assert_eq!(args.last().unwrap(), "audit auth");
+    }
+
+    fn unique_tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("laniakea-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn derive_submit_state_returns_payload_canopus_when_writable() {
+        // PR-A §5.1/§7: payload-driven state derivation, principle #1 SSOT.
+        let repo = unique_tmp("derive-submit-state-payload");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let (state, source) = derive_submit_state(Some(repo.to_str().unwrap()), "/env-state");
+
+        assert_eq!(state, repo.join(".canopus").to_str().unwrap());
+        assert_eq!(source, "payload_repo");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn derive_submit_state_falls_back_to_env_when_payload_absent() {
+        // principle #3 backwards compat: no payload repo → env_state preserved.
+        let (state, source) = derive_submit_state(None, "/env-state");
+
+        assert_eq!(state, "/env-state");
+        assert_eq!(source, "env_fallback");
+    }
+
+    #[test]
+    fn derive_submit_state_falls_back_when_probe_fails() {
+        // §5.5 scenario E: probe failure must surface env_fallback + WARN.
+        // /proc is a virtual fs that rejects creation under it for non-root.
+        let (state, source) =
+            derive_submit_state(Some("/proc/1/canopus-write-probe"), "/env-state");
+
+        assert_eq!(state, "/env-state");
+        assert_eq!(source, "env_fallback");
+    }
+
+    #[test]
+    fn canopus_submit_args_uses_payload_repo_for_state_when_writable() {
+        let repo = unique_tmp("submit-args-payload-state");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let payload = serde_json::json!({
+            "request": "run in selected worktree",
+            "repo_path": repo.to_str().unwrap()
+        })
+        .to_string();
+
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo-from-env",
+            "/env-state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(arg_value(&args, "--repo"), Some(repo.to_str().unwrap()));
+        assert_eq!(
+            arg_value(&args, "--state"),
+            Some(repo.join(".canopus").to_str().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn canopus_submit_args_state_falls_back_to_env_when_payload_repo_absent() {
+        let payload = serde_json::json!({"request": "use env state"}).to_string();
+
+        let args = canopus_submit_args(
+            &task(TaskType::Bug, &payload),
+            "/repo-from-env",
+            "/env-state",
+            CanopusRoleMode::Agent,
+        );
+
+        assert_eq!(arg_value(&args, "--repo"), Some("/repo-from-env"));
+        assert_eq!(arg_value(&args, "--state"), Some("/env-state"));
+    }
+
+    #[test]
+    fn canopus_submit_args_for_label_exposes_args_to_external_callers() {
+        // PR-A A2: integration tests in apps/canopus/tests/multi_project_state_routing.rs
+        // need to call this without seeing CanopusRoleMode.
+        let repo = unique_tmp("submit-args-public-label");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let payload = serde_json::json!({
+            "request": "labeled call",
+            "repo_path": repo.to_str().unwrap()
+        })
+        .to_string();
+
+        let args = canopus_submit_args_for_label(
+            &task(TaskType::Bug, &payload),
+            "/repo-from-env",
+            "/env-state",
+            "canopus.agent",
+        )
+        .unwrap();
+
+        assert_eq!(arg_value(&args, "--repo"), Some(repo.to_str().unwrap()));
+        assert_eq!(
+            arg_value(&args, "--state"),
+            Some(repo.join(".canopus").to_str().unwrap())
+        );
+
+        let err = canopus_submit_args_for_label(
+            &task(TaskType::Bug, "{}"),
+            "/repo",
+            "/state",
+            "not-a-real-label",
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported custom task label `not-a-real-label`"));
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
