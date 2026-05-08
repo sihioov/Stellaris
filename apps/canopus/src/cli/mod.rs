@@ -5,6 +5,8 @@ mod commands;
 mod finalize;
 mod submit;
 
+pub use args::{derive_state_for_run, derive_state_with_source, StateSource};
+
 pub async fn run(args: Vec<String>) -> CanopusResult<()> {
     if args.len() < 2 {
         return Err(CanopusError::InvalidInput(usage()));

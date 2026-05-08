@@ -346,6 +346,26 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertNotIn("proposal_intake_state", payload)
         self.assertEqual(task["meta"]["proposal_intake_state"], "not_required")
 
+    def test_task_payload_carries_repo_path_for_state_routing(self):
+        """repo_path must be present in payload so Laniakea/canopus-watch can
+        derive the per-project .canopus/ state root (PR-A payload-driven routing)."""
+        bot = load_bot()
+        ctx = types.SimpleNamespace(
+            guild=types.SimpleNamespace(id=1),
+            channel=types.SimpleNamespace(id=2),
+            message=types.SimpleNamespace(id=3),
+        )
+
+        payload = bot.build_task_payload(
+            ctx,
+            "discord-abc123",
+            "multi-project routing smoke",
+            {"repo_path": "/home/user/project/MyNewProject"},
+            "canopus.agent",
+        )
+
+        self.assertEqual(payload["repo_path"], "/home/user/project/MyNewProject")
+
 class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_canopus_json_preserves_partial_failure_stdout_object(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,7 +2,73 @@ use crate::adapters::github::ProjectOwnerKind;
 use crate::core::{CanopusError, CanopusResult, GitHubProjectMode};
 use dysonsphere::message::TaskType;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Origin of the resolved state directory used by [`derive_state_for_run`].
+///
+/// Surfaced so callers can attach `source=...` to their observability log lines
+/// (plan §6.5) without re-deriving the source label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateSource {
+    /// Returned when the payload `repo_path` directory exists, is writable, and
+    /// resolved to `<payload_repo>/.canopus`.
+    PayloadRepo,
+    /// Returned when payload `repo_path` is absent, missing, or fails the
+    /// write probe (plan §5.5). Caller falls back to the env/CLI-provided
+    /// state path.
+    EnvFallback,
+}
+
+impl StateSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PayloadRepo => "payload_repo",
+            Self::EnvFallback => "env_fallback",
+        }
+    }
+}
+
+/// Derives the state root for a finalize/submit run from the task payload's
+/// `repo_path`, falling back to `parsed_state` when payload is absent or the
+/// candidate directory is not writable.
+///
+/// When `payload_repo` is provided and `<payload_repo>/.canopus` is creatable
+/// and writable (verified via a `.write-probe` round trip per plan §5.5),
+/// this returns that path. Otherwise it returns `parsed_state` and emits a
+/// WARN log so operators can grep for the cause.
+pub fn derive_state_for_run(payload_repo: Option<&Path>, parsed_state: &Path) -> PathBuf {
+    derive_state_with_source(payload_repo, parsed_state).0
+}
+
+/// Variant of [`derive_state_for_run`] that also returns a [`StateSource`]
+/// label for observability (plan §6.5 / PR-A A7).
+pub fn derive_state_with_source(
+    payload_repo: Option<&Path>,
+    parsed_state: &Path,
+) -> (PathBuf, StateSource) {
+    if let Some(repo) = payload_repo {
+        let candidate = repo.join(".canopus");
+        match probe_state_writable(&candidate) {
+            Ok(()) => return (candidate, StateSource::PayloadRepo),
+            Err(err) => {
+                log::warn!(
+                    "[submit] state_root probe failed at {}: {}; falling back to env_state",
+                    candidate.display(),
+                    err
+                );
+            }
+        }
+    }
+    (parsed_state.to_path_buf(), StateSource::EnvFallback)
+}
+
+fn probe_state_writable(candidate: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(candidate)?;
+    let probe = candidate.join(".write-probe");
+    fs::write(&probe, b"")?;
+    fs::remove_file(&probe)?;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorktreeCreateArgs {
@@ -775,5 +841,100 @@ pub(crate) fn parse_task_type(value: &str) -> CanopusResult<TaskType> {
         other => Err(CanopusError::InvalidInput(format!(
             "unsupported --task-type {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod derive_state_for_run_tests {
+    use super::*;
+
+    fn unique_tmp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("canopus-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn returns_env_fallback_when_payload_repo_absent() {
+        let env_state = unique_tmp("derive-state-env-fallback");
+        let _ = fs::remove_dir_all(&env_state);
+        let (state, source) = derive_state_with_source(None, &env_state);
+        assert_eq!(state, env_state);
+        assert_eq!(source, StateSource::EnvFallback);
+        assert_eq!(source.as_str(), "env_fallback");
+    }
+
+    #[test]
+    fn returns_payload_repo_canopus_when_directory_writable() {
+        let payload_repo = unique_tmp("derive-state-payload-writable");
+        let env_state = unique_tmp("derive-state-payload-writable-env");
+        let _ = fs::remove_dir_all(&payload_repo);
+        let _ = fs::remove_dir_all(&env_state);
+        fs::create_dir_all(&payload_repo).unwrap();
+
+        let (state, source) = derive_state_with_source(Some(&payload_repo), &env_state);
+
+        assert_eq!(state, payload_repo.join(".canopus"));
+        assert_eq!(source, StateSource::PayloadRepo);
+        assert_eq!(source.as_str(), "payload_repo");
+        assert!(state.is_dir(), "derive must create candidate directory");
+        assert!(
+            !state.join(".write-probe").exists(),
+            "probe artifact must be cleaned up"
+        );
+        let _ = fs::remove_dir_all(&payload_repo);
+    }
+
+    #[test]
+    fn returns_env_fallback_when_payload_repo_path_is_a_file() {
+        // probe failure path: parent is a regular file → create_dir_all under it fails.
+        let parent = unique_tmp("derive-state-not-a-dir");
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir_all(parent.parent().unwrap()).unwrap();
+        let payload_repo = parent.join("file-not-dir");
+        if let Some(p) = payload_repo.parent() {
+            fs::create_dir_all(p).unwrap();
+        }
+        fs::write(&payload_repo, b"i am a file, not a directory\n").unwrap();
+        let env_state = unique_tmp("derive-state-not-a-dir-env");
+        let _ = fs::remove_dir_all(&env_state);
+
+        let (state, source) = derive_state_with_source(Some(&payload_repo), &env_state);
+
+        assert_eq!(
+            state, env_state,
+            "must fall back to env_state on probe fail"
+        );
+        assert_eq!(source, StateSource::EnvFallback);
+        let _ = fs::remove_file(&payload_repo);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn self_hosting_payload_equals_env_state_returns_same_canopus_path() {
+        // plan §8.2: when payload_repo points at the same tree the env_state
+        // already lives under, derivation must yield the same .canopus path
+        // (no double-derivation, no migration).
+        let repo = unique_tmp("derive-state-self-hosting");
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        let env_state = repo.join(".canopus");
+
+        let (state, source) = derive_state_with_source(Some(&repo), &env_state);
+
+        assert_eq!(state, env_state);
+        assert_eq!(source, StateSource::PayloadRepo);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn public_helper_returns_pathbuf_only() {
+        // PR-A spec signature: pub fn derive_state_for_run(...) -> PathBuf.
+        let payload_repo = unique_tmp("derive-state-public-signature");
+        let _ = fs::remove_dir_all(&payload_repo);
+        fs::create_dir_all(&payload_repo).unwrap();
+        let env_state = unique_tmp("derive-state-public-signature-env");
+
+        let resolved: PathBuf = derive_state_for_run(Some(&payload_repo), &env_state);
+        assert_eq!(resolved, payload_repo.join(".canopus"));
+        let _ = fs::remove_dir_all(&payload_repo);
     }
 }
