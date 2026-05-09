@@ -223,11 +223,8 @@ fn artifact_kind_for_role(role: &AgentRole) -> ArtifactKind {
     }
 }
 
-fn artifact_content_for_role(role: &AgentRole, runtime_log: &str, final_message: &str) -> String {
-    match role {
-        AgentRole::Planner | AgentRole::Reviewer => final_message.to_string(),
-        _ => runtime_log.to_string(),
-    }
+fn artifact_content_for_role(_role: &AgentRole, _runtime_log: &str, final_message: &str) -> String {
+    final_message.to_string()
 }
 
 fn summary_for_role(role: &AgentRole) -> String {
