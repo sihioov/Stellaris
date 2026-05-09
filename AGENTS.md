@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Stellaris is a Rust workspace for distributed task processing. Core crates live at the repository root: `dysonsphere/` contains shared task contracts, status types, storage, discovery, and queue abstractions; `ton618/` schedules and dispatches pending work; `laniakea/` executes tasks; `hubble/` collects external signals; `kepler/` scans codebase findings. AI development automation lives in `apps/canopus/`, and the Discord control surface lives in `apps/europa/`. Project documentation and architecture notes are under `docs/`; use `docs/architecture.md` for the current core/app responsibility boundary.
+Stellaris is a Rust workspace for distributed task processing. Core crates live at the repository root: `dysonsphere/` contains shared task contracts, status types, storage, discovery, and queue abstractions; `ton618/` schedules and dispatches pending work; `laniakea/` executes tasks; `hubble/` collects external signals; `kepler/` scans codebase findings. AI development automation lives in `apps/canopus/`, and the Discord control surface lives in `apps/europa/`. Project documentation and architecture notes are under `docs/`; use `docs/architecture.md` for the current core/app responsibility boundary. `docs/solutions/` holds documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`).
 
 ## Build, Test, and Development Commands
 - `cargo build --workspace` — build all Rust crates.
