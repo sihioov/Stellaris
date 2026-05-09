@@ -31,6 +31,9 @@ Core Canopus source organized in a ports-and-adapters (hexagonal) architecture. 
 | `run_identity.rs` | Stable run ID generation from task payload (used to scope `.canopus/` state paths) |
 | `types.rs` | Shared domain types: `AgentRole`, `ArtifactKind`, `AgentMessage`, `AgentRunResult`, `StageResult` |
 | `error.rs` | `CanopusError` enum — covers runtime, IO, config, and agent failures |
+| `module_derivation.rs` | Pure function `derive_modules(&[PathBuf]) -> Vec<String>` — maps changed file paths to module names via static prefix table |
+| `branch_naming.rs` | Pure functions `derive_branch_name(user_request, run_id) -> String` and `with_collision_suffix(base, n) -> String` — slugify Discord command into kebab-case branch name |
+| `commit_message.rs` | Free function `format_commit_message(...)` — assembles `[module] type: summary` + body + trailers (Canopus identity + Agent-Runtime) |
 
 ## ports/ Files
 

@@ -153,6 +153,43 @@ let agenda = Agenda::from_github_issue("owner", "repo", 42, "Fix the bug")?;
 - Use `canopus finalize --agenda-id <id> --repo-path <path>` to notify Discord and clean up temporary state
 - Integrates with `notify_discord()` webhook handler
 
+### Local commit auto-flow (V1.5)
+
+**Trigger:** When `CANOPUS_ALLOW_LOCAL_COMMIT=1` and a task arrives via watch with `approval_state == "approved"`, Canopus automatically:
+1. Creates a new branch matching pattern `canopus/<task-slug>-<run-id-short>` (with `-N` suffix on collision)
+2. Commits all changes with an AI-generated message in `[module] type: summary` convention
+
+**Pre-flight requirements** (target project must satisfy):
+- `.canopus/` MUST be in `.gitignore`
+- Working branch must NOT be detached HEAD
+- Index must be clean (no pre-staged changes)
+
+**Commit message format:**
+```
+[<modules>] feat: complete agenda <id>
+
+
+User-Request: !run <original Discord command>
+
+Co-Authored-By: Canopus <noreply@stellaris.local>
+Agent-Runtime: <runtime> (<model>)
+```
+
+**Rollback recipe:**
+```bash
+git checkout main
+git branch -D <branch>
+```
+
+**What does NOT happen automatically:**
+- No `git push` (push to origin still requires manual action or future V2 gate)
+- No PR creation (V2)
+- No merge or deploy (V2/V3)
+
+**Limitations (V1.5):**
+- `user_request`, `reviewer_summary`, `body` fields are currently empty in commit body — those will be plumbed in a follow-up
+- `commit_type` is hardcoded to `feat` for V1.5; type inference is a follow-up
+
 ## Dependencies
 
 ### Internal

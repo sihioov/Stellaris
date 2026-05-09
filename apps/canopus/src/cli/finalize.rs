@@ -1,7 +1,10 @@
 use crate::adapters::github::GitHubClient;
 use crate::adapters::tool_gateway::LocalToolGateway;
-use crate::cli::args::{derive_state_with_source, FinalizeArgs, WatchArgs};
+use crate::cli::args::{derive_state_with_source, env_flag, FinalizeArgs, WatchArgs};
 use crate::cli::commands::delivery_finalize::DeliveryGateReport;
+use crate::core::branch_naming::{derive_branch_name, with_collision_suffix};
+use crate::core::commit_message::format_commit_message;
+use crate::core::module_derivation::derive_modules;
 use crate::core::{derive_run_identity, CanopusError, CanopusResult};
 use crate::ports::ToolGateway;
 use serde_json::Value;
@@ -79,7 +82,12 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                     log::info!("[watch] Processed 태스크 발견: {}", task.task_id);
                     let branch = format!("canopus/{run_id}");
                     let repo = task.repo_path.as_deref().unwrap_or(&parsed.repo);
-                    match post_approval(repo, &branch, &run_id, None, &tools, FinalizeMode::DryRun)
+                    let mode = if env_flag("CANOPUS_ALLOW_LOCAL_COMMIT") {
+                        FinalizeMode::LocalCommitOnly
+                    } else {
+                        FinalizeMode::DryRun
+                    };
+                    match post_approval(repo, &branch, &run_id, None, &tools, mode)
                         .await
                         .and_then(|output| {
                             persist_finalize_record_if_absent(&task_state, &run_id, &output)
@@ -225,6 +233,7 @@ pub(crate) async fn finalize(args: &[String]) -> CanopusResult<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FinalizeMode {
     DryRun,
+    LocalCommitOnly,
     Mutate,
 }
 
@@ -249,6 +258,146 @@ pub(crate) async fn post_approval(
             "dry-run: skipped git add/commit/push, gh pr create, and issue close".to_string(),
         );
         notify_discord("🧪 **Finalize dry-run** — no push/PR/GitHub mutation performed.");
+        return Ok(plan.join("\n"));
+    }
+
+    // LocalCommitOnly: pre-flight + branch creation + commit, then return without push/PR.
+    // V1.5 limitations (documented in plan): user_request, reviewer summary, and commit_type
+    // inference are not yet wired through to this call site, so we use minimum viable values.
+    if matches!(mode, FinalizeMode::LocalCommitOnly) {
+        // Pre-flight 1: non-detached HEAD (post-executor invariant).
+        let head = tools.run_check(repo, &["git", "symbolic-ref", "-q", "HEAD"])?;
+        if head.status != 0 {
+            return Err(CanopusError::Runtime(
+                "aborting auto-commit: detached HEAD".to_string(),
+            ));
+        }
+        // Pre-flight 2: clean index (post-executor invariant; distinct from submit-time
+        // ensure_clean_worktree which validates pre-executor state).
+        let cached = tools.run_check(repo, &["git", "diff", "--cached", "--quiet"])?;
+        if cached.status != 0 {
+            return Err(CanopusError::Runtime(
+                "aborting auto-commit: index is dirty".to_string(),
+            ));
+        }
+        // Pre-flight 3: .canopus/ must be gitignored (PM-a; sidesteps changed_files
+        // rename-arrow bug while keeping `git add -A` safe).
+        let ignored = tools.run_check(repo, &["git", "check-ignore", "-q", ".canopus/"])?;
+        if ignored.status != 0 {
+            return Err(CanopusError::Runtime(
+                "aborting auto-commit: .canopus/ must be in .gitignore".to_string(),
+            ));
+        }
+
+        // Capture porcelain BEFORE branching so we can short-circuit on no-op without
+        // leaving an orphan branch behind (plan §T5 idempotency carve-out).
+        let porcelain = tools.changed_files(repo)?;
+        let changed_paths: Vec<PathBuf> = porcelain
+            .stdout
+            .lines()
+            .filter_map(|line| {
+                // Porcelain format: "XY path" — first 3 chars are status, rest is path.
+                line.get(3..).map(|p| PathBuf::from(p.trim()))
+            })
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        if changed_paths.is_empty() {
+            plan.push("local-commit-only: no changes to commit; idempotent skip".to_string());
+            log::info!(
+                "[finalize] local-commit-only: no changes for run {}; skipping",
+                agenda_id
+            );
+            return Ok(plan.join("\n"));
+        }
+
+        // Branch creation with collision retry (PM-b).
+        // user_request is not yet plumbed to this call site (V1.5 limitation); slug
+        // falls back to "task" via derive_branch_name's empty-input handling.
+        let user_request = "";
+        let base_branch = derive_branch_name(user_request, agenda_id);
+        let mut branch_used: Option<String> = None;
+        for n in 1u32..=10 {
+            let candidate = if n == 1 {
+                base_branch.clone()
+            } else {
+                with_collision_suffix(&base_branch, n)
+            };
+            let checkout = tools.run_check(repo, &["git", "checkout", "-b", &candidate])?;
+            if checkout.status == 0 {
+                branch_used = Some(candidate);
+                break;
+            }
+            if checkout.stderr.contains("already exists") {
+                log::warn!(
+                    "[finalize] branch {} exists, retrying with suffix (attempt {})",
+                    candidate,
+                    n
+                );
+                continue;
+            }
+            return Err(CanopusError::Tool(checkout.stderr));
+        }
+        let branch_used = match branch_used {
+            Some(name) => name,
+            None => {
+                log::error!(
+                    "[finalize] branch namespace exhausted for run {}",
+                    agenda_id
+                );
+                return Err(CanopusError::Runtime(format!(
+                    "branch namespace exhausted for run {}",
+                    agenda_id
+                )));
+            }
+        };
+
+        // Build commit message via the pure formatter.
+        // V1.5 minimum viable inputs: empty reviewer_summary/body, hardcoded "feat" type,
+        // legacy summary pattern, empty user_request. Type inference + reviewer artifact
+        // wiring tracked as follow-up.
+        let modules = derive_modules(&changed_paths);
+        let summary = format!("complete agenda {}", agenda_id);
+        let runtime = std::env::var("CANOPUS_AGENT_RUNTIME").unwrap_or_else(|_| "mock".into());
+        let model = match runtime.as_str() {
+            "codex" => std::env::var("CANOPUS_CODEX_MODEL").unwrap_or_else(|_| "default".into()),
+            "claude" => std::env::var("CANOPUS_CLAUDE_MODEL").unwrap_or_else(|_| "default".into()),
+            _ => "n/a".into(),
+        };
+        let msg = format_commit_message(
+            "",
+            &modules,
+            "feat",
+            &summary,
+            "",
+            user_request,
+            &runtime,
+            &model,
+        );
+
+        tools.run_check(repo, &["git", "add", "-A"])?;
+        let commit = tools.run_check(repo, &["git", "commit", "-m", &msg])?;
+        if commit.status != 0 {
+            let no_changes = commit.stdout.contains("nothing to commit")
+                || commit.stderr.contains("nothing to commit")
+                || commit.stdout.contains("no changes added")
+                || commit.stderr.contains("no changes added");
+            if no_changes {
+                plan.push(
+                    "local-commit-only: no changes after add; continuing idempotently".to_string(),
+                );
+            } else {
+                return Err(CanopusError::Tool(commit.stderr));
+            }
+        }
+        log::info!(
+            "[finalize] local-commit-only: branch={} run_id={}",
+            branch_used,
+            agenda_id
+        );
+        plan.push(format!(
+            "local-commit-only: committed on branch {} (no push, no PR)",
+            branch_used
+        ));
         return Ok(plan.join("\n"));
     }
 

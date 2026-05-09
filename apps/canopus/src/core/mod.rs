@@ -1,4 +1,7 @@
+pub mod branch_naming;
+pub mod commit_message;
 pub mod error;
+pub mod module_derivation;
 pub mod pipeline;
 pub mod run_identity;
 pub mod types;
