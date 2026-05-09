@@ -9,6 +9,7 @@ tasks.json
 tasks.lock
 **/tasks.lock
 apps/europa/projects.json
+/package-lock.json
 .canopus/
 .claude/
 .codex
