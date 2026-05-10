@@ -392,7 +392,73 @@ class DiscordBotConfigTests(unittest.TestCase):
 
         self.assertEqual(payload["repo_path"], "/home/user/project/MyNewProject")
 
+    def test_default_new_project_path_uses_configured_project_root(self):
+        bot = load_bot(NEW_PROJECT_DEFAULT_ROOT="/tmp/europa-projects")
+
+        self.assertEqual(
+            bot.default_new_project_repo_path("demo"),
+            "/tmp/europa-projects/demo",
+        )
+
+    def test_default_new_project_path_rejects_path_escape_names(self):
+        bot = load_bot(NEW_PROJECT_DEFAULT_ROOT="/tmp/europa-projects")
+
+        with self.assertRaises(ValueError):
+            bot.default_new_project_repo_path("../demo")
+
 class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_project_without_path_creates_under_default_project_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = load_bot(NEW_PROJECT_DEFAULT_ROOT=str(Path(tmp) / "projects"))
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.discord.utils.get = lambda items, **kwargs: None
+
+            class FakeCategory:
+                def __init__(self, name, category_id=123):
+                    self.name = name
+                    self.id = category_id
+                    self.channels = []
+
+                async def create_text_channel(self, name):
+                    self.channels.append(name)
+
+            class FakeGuild:
+                def __init__(self):
+                    self.categories = []
+                    self.created_categories = []
+
+                async def create_category(self, name):
+                    category = FakeCategory(name)
+                    self.created_categories.append(category)
+                    return category
+
+            class Ctx:
+                def __init__(self):
+                    self.sent = []
+                    self.guild = FakeGuild()
+                    self.channel = types.SimpleNamespace(id=2, name="general", category=None)
+                    self.message = types.SimpleNamespace(id=3)
+                    self.author = types.SimpleNamespace(id=4)
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            ctx = Ctx()
+            await bot.cmd_new_project(ctx, name="demo")
+
+            expected_repo = Path(tmp) / "projects" / "demo"
+            self.assertTrue((expected_repo / ".git").exists())
+            stored = bot.read_projects()["projects"]["123"]
+            self.assertEqual(stored["repo_path"], str(expected_repo))
+            self.assertEqual(
+                ctx.guild.created_categories[0].channels,
+                ["general", "planning", "development", "review"],
+            )
+            self.assertIn("프로젝트 생성 완료", ctx.sent[0])
+
     async def test_finalize_approved_task_uses_bounded_json_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "fake_canopus.py"

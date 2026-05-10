@@ -10,7 +10,7 @@ Project structure:
     #review      - Reviewer agent only
 
 Commands:
-  !new-project <name> <path>  - Create category + 4 channels + register
+  !new-project <name> [path]  - Create category + 4 channels + register
   !register <path>            - Register current category's repo path
   !ask <question>             - Ask a direct question without creating a task
   !run <request>              - Add task (agent type from channel name)
@@ -56,6 +56,7 @@ from config import (
     CHANNEL_TYPE_MAP,
     DISCORD_BOT_TOKEN,
     ICON_MAP,
+    NEW_PROJECT_DEFAULT_ROOT,
     NON_MUTATING_GITHUB_PROJECT_MODES,
     env_int,
     get_channel_type,
@@ -259,6 +260,30 @@ def git_command(repo_path: str, *args: str) -> tuple[int, str, str]:
         return 1, "", str(exc)
 
 
+def default_new_project_repo_path(name: str) -> str:
+    """Return the default repo path for a Discord-created project name."""
+    project_name = (name or "").strip()
+    if not project_name:
+        raise ValueError("프로젝트 이름이 필요합니다.")
+    path_separators = {sep for sep in (os.sep, os.altsep) if sep}
+    if (
+        project_name in {".", ".."}
+        or os.path.isabs(project_name)
+        or any(sep in project_name for sep in path_separators)
+    ):
+        raise ValueError(
+            f"프로젝트 이름은 기본 경로 아래의 단일 디렉토리 이름이어야 합니다: `{project_name}`"
+        )
+
+    root = os.path.abspath(os.path.expanduser(NEW_PROJECT_DEFAULT_ROOT))
+    repo_path = os.path.abspath(os.path.join(root, project_name))
+    if repo_path == root or os.path.commonpath([root, repo_path]) != root:
+        raise ValueError(
+            f"프로젝트 이름으로 기본 경로 밖을 가리킬 수 없습니다: `{project_name}`"
+        )
+    return repo_path
+
+
 def worktree_status_text(repo_path: str) -> str:
     if not is_git_repo_path(repo_path):
         return f"❌ Git worktree가 아닙니다: `{repo_path}`"
@@ -384,13 +409,19 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
     if not is_authorized(ctx):
         await ctx.send("🚫 권한이 없습니다.")
         return
-    if not name or not repo_path:
-        await ctx.send("사용법: `!new-project <이름> <로컬경로> [--github owner/repo --project-owner org:name|user:name --create-github-repo]`")
+    if not name:
+        await ctx.send("사용법: `!new-project <이름> [로컬경로] [--github owner/repo --project-owner org:name|user:name --create-github-repo]`")
         return
-    repo_path, github_opts, parse_error = parse_github_registration_flags(repo_path)
+    repo_path, github_opts, parse_error = parse_github_registration_flags(repo_path or "")
     if parse_error:
         await ctx.send(f"⚠️ {parse_error}")
         return
+    if not repo_path:
+        try:
+            repo_path = default_new_project_repo_path(name)
+        except ValueError as exc:
+            await ctx.send(f"⚠️ {exc}")
+            return
     if not ctx.guild:
         await ctx.send("⚠️ 서버 채널에서만 사용할 수 있습니다.")
         return
@@ -494,7 +525,7 @@ async def cmd_register(ctx, *, repo_path: str = None):
         await ctx.send(f"⚠️ {parse_error}")
         return
     if not os.path.isdir(repo_path):
-        await ctx.send(f"❌ 경로가 존재하지 않습니다: `{repo_path}`\n신규 프로젝트라면 `!new-project <이름> <경로>` 를 사용하세요.")
+        await ctx.send(f"❌ 경로가 존재하지 않습니다: `{repo_path}`\n신규 프로젝트라면 `!new-project <이름> [경로]` 를 사용하세요.")
         return
     if not is_git_repo_path(repo_path):
         await ctx.send(f"❌ Git 레포지토리가 아닙니다: `{repo_path}`\n`git init`을 먼저 실행하거나 `!new-project` 를 사용하세요.")
@@ -566,7 +597,7 @@ async def cmd_run(ctx, *, request: str = None):
     if project is None:
         await ctx.send(
             f"⚠️ 이 채널의 카테고리에 등록된 프로젝트가 없습니다.\n"
-            f"`!register <로컬경로>` 또는 `!new-project <이름> <경로>` 를 먼저 실행해주세요."
+            f"`!register <로컬경로>` 또는 `!new-project <이름> [경로]` 를 먼저 실행해주세요."
         )
         return
 
@@ -983,8 +1014,8 @@ async def cmd_help(ctx):
         "**📖 Stellaris AI Pipeline — 명령어 목록**\n\n"
 
         "**🗂️ 프로젝트 관리**\n"
-        "`!new-project <이름> <경로>` — 신규 프로젝트 생성\n"
-        "ㄴ 디렉토리 생성 + git init + Discord 카테고리/채널 4개 자동 생성\n"
+        "`!new-project <이름> [경로]` — 신규 프로젝트 생성\n"
+        f"ㄴ 경로 생략 시 `{NEW_PROJECT_DEFAULT_ROOT}/<이름>` 사용; 디렉토리 생성 + git init + Discord 카테고리/채널 4개 자동 생성\n"
         "`!register <경로>` — 현재 카테고리에 기존 Git 레포 등록\n"
         "`!worktree` / `!worktree list` — active worktree 상태/목록 확인\n"
         "`!worktree create <name>` — Canopus를 통해 새 worktree 생성\n"
