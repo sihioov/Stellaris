@@ -155,7 +155,7 @@ impl AgentRuntime for CodexAgentRuntime {
                     created_at: Utc::now(),
                 },
             ],
-            token_usage: extract_token_usage(&stdout),
+            token_usage: extract_token_usage(&stdout).or_else(|| extract_token_usage(&stderr)),
         })
     }
 }
@@ -165,46 +165,46 @@ fn extract_token_usage(stdout: &str) -> Option<TokenUsage> {
         if !line.contains("\"usage\"") {
             continue;
         }
-        // Try to find a JSON object in the line containing a usage block.
         if let Some(start) = line.find('{') {
             let fragment = &line[start..];
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(fragment) {
-                // Responses API: {"usage": {"input_tokens": N, "output_tokens": N}}
-                if let (Some(input), Some(output)) = (
-                    v["usage"]["input_tokens"].as_u64(),
-                    v["usage"]["output_tokens"].as_u64(),
-                ) {
-                    return Some(TokenUsage {
-                        input_tokens: input,
-                        output_tokens: output,
-                    });
-                }
-                // Chat Completions: {"usage": {"prompt_tokens": N, "completion_tokens": N}}
-                if let (Some(prompt), Some(completion)) = (
-                    v["usage"]["prompt_tokens"].as_u64(),
-                    v["usage"]["completion_tokens"].as_u64(),
-                ) {
-                    return Some(TokenUsage {
-                        input_tokens: prompt,
-                        output_tokens: completion,
-                    });
-                }
-                // Nested: search one level deeper for a usage object with total_tokens
-                if let Some(total) = v["usage"]["total_tokens"].as_u64() {
-                    let input = v["usage"]["input_tokens"]
-                        .as_u64()
-                        .or_else(|| v["usage"]["prompt_tokens"].as_u64())
-                        .unwrap_or(0);
-                    return Some(TokenUsage {
-                        input_tokens: input,
-                        output_tokens: total.saturating_sub(input),
-                    });
+                // Try top-level and Responses-API-nested usage nodes.
+                for usage in [&v["usage"], &v["response"]["usage"]] {
+                    if let (Some(i), Some(o)) = (
+                        usage["input_tokens"].as_u64(),
+                        usage["output_tokens"].as_u64(),
+                    ) {
+                        return Some(TokenUsage {
+                            input_tokens: i,
+                            output_tokens: o,
+                        });
+                    }
+                    if let (Some(p), Some(c)) = (
+                        usage["prompt_tokens"].as_u64(),
+                        usage["completion_tokens"].as_u64(),
+                    ) {
+                        return Some(TokenUsage {
+                            input_tokens: p,
+                            output_tokens: c,
+                        });
+                    }
+                    if let Some(total) = usage["total_tokens"].as_u64() {
+                        let input = usage["input_tokens"]
+                            .as_u64()
+                            .or_else(|| usage["prompt_tokens"].as_u64())
+                            .unwrap_or(0);
+                        return Some(TokenUsage {
+                            input_tokens: input,
+                            output_tokens: total.saturating_sub(input),
+                        });
+                    }
                 }
             }
         }
     }
     None
 }
+
 
 fn codex_prompt(task: &AgentTask, prior_artifacts: &[Artifact]) -> String {
     let role_instruction = match &task.role {
@@ -237,9 +237,29 @@ fn codex_prompt(task: &AgentTask, prior_artifacts: &[Artifact]) -> String {
         task.prompt
     );
 
-    if !prior_artifacts.is_empty() {
+    let helper_artifacts = prior_artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::HelperProvenance)
+        .collect::<Vec<_>>();
+    let other_artifacts = prior_artifacts
+        .iter()
+        .filter(|artifact| artifact.kind != ArtifactKind::HelperProvenance)
+        .collect::<Vec<_>>();
+
+    if !helper_artifacts.is_empty() {
+        prompt.push_str("\nPre-run helper context (Canopus-selected, read-only):\n");
+        for artifact in helper_artifacts {
+            prompt.push_str(&format!(
+                "\n## {}\n{}\n",
+                artifact.kind.file_name(),
+                artifact.content
+            ));
+        }
+    }
+
+    if !other_artifacts.is_empty() {
         prompt.push_str("\nPrior artifacts:\n");
-        for artifact in prior_artifacts {
+        for artifact in other_artifacts {
             prompt.push_str(&format!(
                 "\n## {}\n{}\n",
                 artifact.kind.file_name(),

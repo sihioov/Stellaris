@@ -25,3 +25,15 @@ fn saves_artifact_under_task_directory() {
     assert_eq!(fs::read_to_string(location.path).unwrap(), artifact.content);
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn helper_provenance_artifact_uses_dedicated_filename() {
+    assert_eq!(
+        ArtifactKind::HelperProvenance.file_name(),
+        "helper-provenance.md"
+    );
+    assert_ne!(
+        ArtifactKind::HelperProvenance.file_name(),
+        ArtifactKind::RuntimeLog.file_name()
+    );
+}

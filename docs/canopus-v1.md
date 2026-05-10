@@ -99,6 +99,21 @@ CANOPUS_AGENT_RUNTIME=codex
 
 The Codex runtime invokes `codex exec --cd <repo> --sandbox <mode> --ask-for-approval never`, passes the Canopus role/task metadata through environment variables, sends prior artifacts in the prompt, and stores the final Codex response in Canopus artifacts/message logs. Keep GitHub push/PR/merge/deploy gates closed unless a separate live ramp-up explicitly opens them.
 
+Canopus can optionally run Canopus-selected, read-only pre-run helpers before planner, coder, and reviewer stages:
+
+```bash
+# default/off: no helper execution
+CANOPUS_PRE_RUN_HELPERS=off
+
+# deterministic test backend
+CANOPUS_PRE_RUN_HELPERS=mock
+
+# real narrow repository lookup backend
+CANOPUS_PRE_RUN_HELPERS=repo-explore
+```
+
+Helpers are disabled by default and are selected by Canopus policy, not Discord text. `repo-explore` runs `omx explore --prompt <derived prompt>` with bounded output and isolated helper state/cache/log directories, then compares pre/post repository mutation snapshots covering tracked, untracked, and watched ignored paths such as `.omx/`, `.canopus/`, and `target/`. Advisory helper failures are recorded and skipped instead of failing the role by default; set `CANOPUS_PRE_RUN_HELPER_FAILURE_POLICY=fail-fast` only when operators intentionally want helper failure to stop submit. Successful helper attempts are attached to supported runtime context and every attempt writes `.canopus/artifacts/<role-task-id>-helper-<helper-name>-<ordinal>/helper-provenance.md`.
+
 `canopus watch` is the local finalizer runner: after approval marks a task `Processed`, it writes dry-run finalize records under `<repo>/.canopus/runs/<id>-finalize.txt`. The launcher exposes this process in `start-pipeline.ps1 -DryRun` and starts it in the non-`-DryRun` topology with live mutation gates disabled by default.
 - GitHub-backed v1 now includes strict-live registration/intake plus gated PR/merge/deploy contracts. Default verification remains offline/mock; live smoke remains opt-in with disposable resources, explicit credentials, and all mutation gates enabled.
 

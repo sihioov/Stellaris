@@ -4,16 +4,21 @@ use crate::adapters::github::{
     build_project_sync_plan, GitHubClient, GitHubProjectGates, GitHubProjectSyncConfig,
     GitHubProjectSyncReport, ProjectOwnerKind,
 };
+use crate::adapters::pre_run_helper::{MockPreRunHelperBackend, RepoExplorePreRunHelperBackend};
 use crate::adapters::task_backend::StellarisTaskBackend;
 use crate::adapters::tool_gateway::LocalToolGateway;
 use crate::cli::args::{env_flag, SubmitArgs};
 use crate::cli::finalize::notify_discord;
 use crate::core::{
-    derive_run_identity, Agenda, AgendaSource, AgentRole, AgentTask, Artifact, ArtifactKind,
-    CanopusError, CanopusResult, GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode,
-    Pipeline, StageRecord, TokenUsage, WorkflowState,
+    derive_run_identity, helper_artifact_task_id, select_pre_run_helpers, Agenda, AgendaSource,
+    AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError, CanopusResult, GitHubIssueMetadata,
+    GitHubProjectMetadata, GitHubProjectMode, HelperProvenance, HelperRequest, Pipeline,
+    PreRunHelperConfig, PreRunHelperFailurePolicy, PreRunHelperMode, StageRecord, TokenUsage,
+    WorkflowState,
 };
-use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
+use crate::ports::{
+    AgentContext, AgentRuntime, ArtifactStore, PreRunHelperBackend, TaskBackend, ToolGateway,
+};
 use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::Path;
@@ -40,6 +45,8 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
     let artifact_store = LocalFileArtifactStore::new(parsed.state.join("artifacts"));
     let backend = StellarisTaskBackend::new(parsed.state.join("tasks.json"))?;
     let runtime = selected_runtime()?;
+    let helper_config = PreRunHelperConfig::from_env()?;
+    let helper_backend = selected_pre_run_helper_backend(&helper_config);
     let tools = LocalToolGateway;
     let mut stage_records: Vec<StageRecord> = Vec::new();
 
@@ -100,6 +107,19 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
             &agenda.id,
             &mut stage_records
         );
+        let helper_artifacts = run_pre_run_helpers(
+            helper_backend.as_deref(),
+            &helper_config,
+            &artifact_store,
+            &parsed.repo,
+            &parsed.state,
+            &agenda.id,
+            &task,
+            stage_name,
+            &prior_artifacts,
+            &mut stage_records,
+        )?;
+        prior_artifacts.extend(helper_artifacts);
         let result = try_stage!(
             runtime
                 .run(
@@ -764,6 +784,114 @@ fn selected_runtime() -> CanopusResult<Box<dyn AgentRuntime>> {
             "unsupported CANOPUS_AGENT_RUNTIME: {value}"
         ))),
     }
+}
+
+fn selected_pre_run_helper_backend(
+    config: &PreRunHelperConfig,
+) -> Option<Box<dyn PreRunHelperBackend>> {
+    match config.mode {
+        PreRunHelperMode::Off => None,
+        PreRunHelperMode::Mock => Some(Box::new(MockPreRunHelperBackend)),
+        PreRunHelperMode::RepoExplore => Some(Box::new(RepoExplorePreRunHelperBackend::new(
+            config.max_output_bytes,
+        ))),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_pre_run_helpers(
+    helper_backend: Option<&dyn PreRunHelperBackend>,
+    config: &PreRunHelperConfig,
+    artifact_store: &LocalFileArtifactStore,
+    repo: &Path,
+    state_path: &Path,
+    agenda_id: &str,
+    task: &AgentTask,
+    stage_name: &str,
+    prior_artifacts: &[Artifact],
+    stage_records: &mut Vec<StageRecord>,
+) -> CanopusResult<Vec<Artifact>> {
+    let Some(helper_backend) = helper_backend else {
+        return Ok(Vec::new());
+    };
+    let selections = select_pre_run_helpers(config, &task.role, stage_name);
+    let mut attached_artifacts = Vec::new();
+
+    for (ordinal, selection) in selections.into_iter().enumerate() {
+        let helper_task_id = helper_artifact_task_id(&task.id, &selection.name, ordinal);
+        let predicted_path = state_path
+            .join("artifacts")
+            .join(&helper_task_id)
+            .join(ArtifactKind::HelperProvenance.file_name());
+        let helper_stage = StageTimer::start(format!("helper:{stage_name}"));
+        let request = HelperRequest {
+            agenda_id: agenda_id.to_string(),
+            role_task_id: task.id.clone(),
+            role: task.role.clone(),
+            stage_name: stage_name.to_string(),
+            user_request_summary: task.prompt.clone(),
+            prior_artifact_count: prior_artifacts.len(),
+        };
+
+        let backend_identity = helper_backend.identity();
+        let result = helper_backend.run(repo, &request, &selection);
+        let (status, summary, output, read_only_check, attached_to) = match result {
+            Ok(output) => {
+                let attached_to = if selection.attach_as_context {
+                    format!("prior_artifacts before {}", task.id)
+                } else {
+                    "not attached".to_string()
+                };
+                (
+                    "ok".to_string(),
+                    output.summary.clone(),
+                    Some(output.clone()),
+                    output.read_only_check.clone(),
+                    attached_to,
+                )
+            }
+            Err(err) => (
+                "failed".to_string(),
+                err.to_string(),
+                None,
+                format!("failed: {err}"),
+                "not attached".to_string(),
+            ),
+        };
+
+        let provenance = HelperProvenance {
+            name: selection.name.clone(),
+            role: task.role.as_str().to_string(),
+            stage_name: stage_name.to_string(),
+            reason: selection.reason.clone(),
+            backend_identity,
+            status: status.clone(),
+            summary,
+            artifact_path: predicted_path.display().to_string(),
+            attached_to,
+            read_only_check,
+        };
+        let artifact = Artifact {
+            task_id: helper_task_id,
+            kind: ArtifactKind::HelperProvenance,
+            content: provenance.to_markdown(output.as_ref()),
+        };
+        let saved = artifact_store.save(&artifact)?;
+        stage_records.push(helper_stage.finish(&status, vec![saved.path.display().to_string()]));
+        persist_run_records(state_path, agenda_id, stage_records)?;
+
+        if status == "ok" && selection.attach_as_context {
+            attached_artifacts.push(artifact);
+        } else if selection.required || config.failure_policy == PreRunHelperFailurePolicy::FailFast
+        {
+            return Err(CanopusError::Runtime(format!(
+                "required pre-run helper `{}` failed before stage `{stage_name}`",
+                selection.name
+            )));
+        }
+    }
+
+    Ok(attached_artifacts)
 }
 
 #[cfg(test)]

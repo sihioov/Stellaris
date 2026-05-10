@@ -106,6 +106,48 @@ async fn codex_runtime_invokes_codex_exec_and_captures_message_log() {
 }
 
 #[tokio::test]
+async fn codex_prompt_labels_helper_context_separately_from_prior_artifacts() {
+    let repo = test_repo("codex-runtime-helper-context");
+    let script = fake_codex(&repo, false);
+    let agenda = Agenda::new_with_id("CANOPUS-1", "review helper context").unwrap();
+    let task = AgentTask::for_agenda("TASK-HELPER-CONTEXT", &agenda, AgentRole::Reviewer);
+    let runtime =
+        CodexAgentRuntime::new(vec!["python3".to_string(), script.display().to_string()]).unwrap();
+    let prior_artifacts = vec![
+        Artifact {
+            task_id: "TASK-HELPER".to_string(),
+            kind: ArtifactKind::HelperProvenance,
+            content: "helper: repo-explore\nstatus: ok\nHelper output".to_string(),
+        },
+        Artifact {
+            task_id: "TASK-PLAN".to_string(),
+            kind: ArtifactKind::Plan,
+            content: "ordinary plan".to_string(),
+        },
+    ];
+
+    let result = runtime
+        .run(
+            &task,
+            &AgentContext {
+                repo_path: repo.clone(),
+            },
+            &prior_artifacts,
+        )
+        .await
+        .unwrap();
+
+    let prompt = &result.message_log[0].content;
+    assert!(prompt.contains("Pre-run helper context (Canopus-selected, read-only):"));
+    assert!(prompt.contains("helper: repo-explore"));
+    assert!(prompt.contains("Prior artifacts:"));
+    assert!(prompt.contains("ordinary plan"));
+    assert!(prompt.find("Pre-run helper context") < prompt.find("Prior artifacts"));
+
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
 async fn coder_role_can_create_repo_changes_through_real_runtime_path() {
     let repo = test_repo("codex-runtime-coder");
     let script = fake_codex(&repo, false);

@@ -379,6 +379,7 @@ pub enum ArtifactKind {
     TestResult,
     Review,
     RuntimeLog,
+    HelperProvenance,
 }
 
 impl ArtifactKind {
@@ -389,6 +390,7 @@ impl ArtifactKind {
             ArtifactKind::TestResult => "test-result.md",
             ArtifactKind::Review => "review.md",
             ArtifactKind::RuntimeLog => "runtime-log.md",
+            ArtifactKind::HelperProvenance => "helper-provenance.md",
         }
     }
 }

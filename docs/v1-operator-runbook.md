@@ -44,6 +44,9 @@ Copy `.env.example` to `.env` and keep defaults non-mutating unless a later live
 | `CANOPUS_CODEX_MODEL` | Optional | No | Optional model override passed to `codex exec --model`. |
 | `CANOPUS_CODEX_PROFILE` | Optional | No | Optional Codex config profile passed to `codex exec --profile`. |
 | `CANOPUS_CODEX_SANDBOX` | Optional | No | Optional Codex sandbox mode; defaults to `workspace-write`. |
+| `CANOPUS_PRE_RUN_HELPERS` | Optional | No | Canopus-selected pre-run helper mode: `off`/unset by default, `mock` for deterministic tests, or `repo-explore` for `omx explore` repository context before planner/coder/reviewer. |
+| `CANOPUS_PRE_RUN_HELPER_MAX_OUTPUT_BYTES` | Optional | No | Maximum helper output attached to role context; defaults to Canopus's bounded helper config. |
+| `CANOPUS_PRE_RUN_HELPER_FAILURE_POLICY` | Optional | No | `advisory` by default records failed helper provenance and continues; `fail-fast` stops submit when a selected helper fails. |
 | `CANOPUS_REPO` | Optional | No | Fallback repo path for `canopus watch`/`finalize` when task payload omits `repo_path`. Multi-project flows derive from payload. |
 | `CANOPUS_STATE` | Optional | No | Fallback state directory when task payload omits `repo_path`. Usually `.canopus`; multi-project flows derive state from payload. |
 | `REPO_PATH` | Optional | No | Repo scanned by Kepler/Hubble-style discovery. |
@@ -84,12 +87,15 @@ Important: validate-read-only is **GitHub-read-only, not workflow-read-only**. `
 Review these artifacts before approving a task:
 
 - `.canopus/runs/<run_id>.json` — stage records; require successful `plan`, `code`/role stage, `check`, and `complete` records.
+- `.canopus/artifacts/<role-task-id>-helper-<helper-name>-<ordinal>/helper-provenance.md` — optional pre-run helper provenance when `CANOPUS_PRE_RUN_HELPERS` is enabled; confirm the helper is Canopus-selected, read-only, and either attached successfully or failed advisory without changing scope.
 - `.canopus/artifacts/<task-or-stage>/plan.md` — planned change summary.
 - `.canopus/artifacts/<task-or-stage>/runtime-log.md` — runtime or command output.
 - `.canopus/artifacts/<task-or-stage>/test-result.md` — validation output when produced.
 - `.canopus/artifacts/<task-or-stage>/review.md` — reviewer output.
 
 Approve only when stage records and artifacts match the requested scope and no live mutation gate was required. Reject when the task is off-scope, validation is missing/failed, artifacts are inconsistent, or a gate violation appears.
+
+Pre-run helper notes: helper execution is not controlled by Discord prompt text and does not add a daemon or mid-run agent loop. The real `repo-explore` backend runs an allowlisted `omx explore` command with isolated helper state/cache/log paths and a pre/post mutation snapshot guard over tracked, untracked, and watched ignored repository paths. With the default advisory policy, a helper that mutates the repo or exits nonzero writes failed provenance and is not attached to the role prompt; role execution continues.
 
 ## 5. Finalize and delivery-gate dry-run/local commit
 
