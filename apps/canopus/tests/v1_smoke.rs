@@ -238,6 +238,7 @@ async fn v1_smoke_closes_pending_task_to_finalize_record_offline() {
         serde_json::json!({
             "request": "v1 smoke request",
             "agenda_id": "agenda-v1-smoke-1",
+            "run_id": "agenda-v1-smoke-1",
             "approval_state": "approved",
             "finalize_requested_at": "2026-05-05T00:00:00Z"
         })

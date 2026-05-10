@@ -3,6 +3,7 @@
 //! AC5: gate ON + approval state → branch created + commit made + finalize sidecar written
 //! AC7: rollback — `git push` is NEVER called (verified by absence of origin remote; a push
 //!      attempt would fail and surface as a test failure)
+#![allow(clippy::await_holding_lock)]
 
 use canopus::cli;
 use std::{
@@ -77,8 +78,8 @@ fn setup_test_repo(name: &str) -> PathBuf {
 }
 
 /// Build a minimal tasks.json for a single approved Processed task.
-/// `agenda_id` drives the run_id / branch derivation.
-fn tasks_json(agenda_id: &str, repo_path: Option<&str>) -> serde_json::Value {
+/// `agenda_id` + `task_id` mirror the submit-time run_id / branch derivation.
+fn tasks_json(agenda_id: &str, task_id: &str, repo_path: Option<&str>) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "agenda_id": agenda_id,
         "approval_state": "approved",
@@ -91,7 +92,7 @@ fn tasks_json(agenda_id: &str, repo_path: Option<&str>) -> serde_json::Value {
             .insert("repo_path".into(), serde_json::Value::String(path.into()));
     }
     serde_json::json!([{
-        "task_id": format!("task-{agenda_id}"),
+        "task_id": task_id,
         "payload": payload.to_string(),   // string-encoded payload (as watch expects)
         "meta": { "status": "Processed" }
     }])
@@ -133,7 +134,15 @@ async fn local_commit_only_creates_branch_and_commit() {
     env::remove_var("DISCORD_WEBHOOK_URL");
 
     let agenda_id = "agenda-e2e-ac5";
+    let task_id = "task-agenda-e2e-ac5";
+    let run_id = "agenda-e2e-ac5-task-agenda-e2e-ac5";
     let repo = setup_test_repo("ac5");
+    let expected_branch = format!("canopus/{run_id}");
+    Command::new("git")
+        .args(["checkout", "-b", &expected_branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
     let state = repo.join(".canopus");
     fs::create_dir_all(&state).unwrap();
 
@@ -144,7 +153,7 @@ async fn local_commit_only_creates_branch_and_commit() {
     let tasks_path = state.join("tasks.json");
     fs::write(
         &tasks_path,
-        serde_json::to_string_pretty(&tasks_json(agenda_id, None)).unwrap(),
+        serde_json::to_string_pretty(&tasks_json(agenda_id, task_id, None)).unwrap(),
     )
     .unwrap();
 
@@ -162,25 +171,19 @@ async fn local_commit_only_creates_branch_and_commit() {
     .await
     .unwrap();
 
-    // ── AC5 assertion 1: branch was created and matches pattern ───────────────
+    // ── AC5 assertion 1: finalization stayed on the submit-created branch ────
     let branch_out = Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(&repo)
         .output()
         .unwrap();
-    let branch_name = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+    let branch_name = String::from_utf8_lossy(&branch_out.stdout)
+        .trim()
+        .to_string();
 
-    // Expected exact branch (traced above). Also assert regex pattern.
     assert_eq!(
-        branch_name, "canopus/task-aedae2",
-        "branch name did not match expected derivation"
-    );
-    // Regex pattern per AC2: ^canopus/[a-z0-9-]+-[0-9a-f]{6}(-[0-9]+)?$
-    let branch_re = regex_match(&branch_name, r"^canopus/[a-z0-9-]+-[0-9a-f]{6}(-[0-9]+)?$");
-    assert!(
-        branch_re,
-        "branch name '{}' does not match AC2 regex pattern",
-        branch_name
+        branch_name, expected_branch,
+        "finalization must commit on the existing submit-created branch"
     );
 
     // ── AC5 assertion 2: commit subject matches AC3 regex ─────────────────────
@@ -189,10 +192,12 @@ async fn local_commit_only_creates_branch_and_commit() {
         .current_dir(&repo)
         .output()
         .unwrap();
-    let subject = String::from_utf8_lossy(&subject_out.stdout).trim().to_string();
+    let subject = String::from_utf8_lossy(&subject_out.stdout)
+        .trim()
+        .to_string();
 
     assert_eq!(
-        subject, "[misc] feat: complete agenda agenda-e2e-ac5",
+        subject, "[misc] feat: complete agenda agenda-e2e-ac5-task-agenda-e2e-ac5",
         "commit subject did not match V1.5 expected format"
     );
     // AC3 regex: ^\[[a-z0-9/_-]+\]\s+(feat|fix|refactor|docs|chore|style|test):\s+\S
@@ -220,7 +225,7 @@ async fn local_commit_only_creates_branch_and_commit() {
     );
 
     // ── AC5 assertion 4: finalize sidecar was written ─────────────────────────
-    let finalize_path = state.join("runs").join(format!("{agenda_id}-finalize.txt"));
+    let finalize_path = state.join("runs").join(format!("{run_id}-finalize.txt"));
     assert!(
         finalize_path.exists(),
         "finalize sidecar not found at {}",
@@ -232,7 +237,7 @@ async fn local_commit_only_creates_branch_and_commit() {
         "finalize sidecar does not mention local-commit-only. content:\n{sidecar}"
     );
     assert!(
-        sidecar.contains("canopus/task-aedae2"),
+        sidecar.contains(&expected_branch),
         "finalize sidecar does not contain branch name. content:\n{sidecar}"
     );
 
@@ -277,7 +282,15 @@ async fn local_commit_only_no_push_to_remote() {
     env::remove_var("DISCORD_WEBHOOK_URL");
 
     let agenda_id = "agenda-e2e-ac7";
+    let task_id = "task-agenda-e2e-ac7";
+    let run_id = "agenda-e2e-ac7-task-agenda-e2e-ac7";
     let repo = setup_test_repo("ac7");
+    let expected_branch = format!("canopus/{run_id}");
+    Command::new("git")
+        .args(["checkout", "-b", &expected_branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
     let state = repo.join(".canopus");
     fs::create_dir_all(&state).unwrap();
 
@@ -296,7 +309,7 @@ async fn local_commit_only_no_push_to_remote() {
     let tasks_path = state.join("tasks.json");
     fs::write(
         &tasks_path,
-        serde_json::to_string_pretty(&tasks_json(agenda_id, None)).unwrap(),
+        serde_json::to_string_pretty(&tasks_json(agenda_id, task_id, None)).unwrap(),
     )
     .unwrap();
 
@@ -345,54 +358,6 @@ async fn local_commit_only_no_push_to_remote() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Manual regex match for `^canopus/[a-z0-9-]+-[0-9a-f]{6}(-[0-9]+)?$`
-/// without pulling in the `regex` crate (not a dev-dependency).
-fn regex_match(s: &str, pattern: &str) -> bool {
-    match pattern {
-        r"^canopus/[a-z0-9-]+-[0-9a-f]{6}(-[0-9]+)?$" => {
-            let Some(rest) = s.strip_prefix("canopus/") else {
-                return false;
-            };
-            // Must end with 6 hex chars or 6 hex chars + "-" + digits
-            // Split at last '-' group: find the 6-hex-suffix
-            let parts: Vec<&str> = rest.splitn(2, '/').collect();
-            let inner = parts[0];
-            // Find the hex suffix: last segment after '-' of length 6, all hexdigit
-            // OR last two segments where second is digits (collision suffix)
-            let segs: Vec<&str> = inner.split('-').collect();
-            if segs.len() < 2 {
-                return false;
-            }
-            // Check if last segment is pure digits (collision suffix)
-            let (hex_seg_idx, has_collision) = if segs.last().map_or(false, |s| s.chars().all(|c| c.is_ascii_digit())) && segs.len() >= 3 {
-                (segs.len() - 2, true)
-            } else {
-                (segs.len() - 1, false)
-            };
-            let hex_seg = segs[hex_seg_idx];
-            if hex_seg.len() != 6 || !hex_seg.chars().all(|c| c.is_ascii_hexdigit()) {
-                return false;
-            }
-            // All preceding segments must be [a-z0-9-]
-            let slug_segs = &segs[..hex_seg_idx];
-            if slug_segs.is_empty() {
-                return false;
-            }
-            for seg in slug_segs {
-                if seg.is_empty() || !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                    return false;
-                }
-            }
-            // Validate all chars
-            let _ = has_collision;
-            true
-        }
-        _ => panic!("unsupported pattern in regex_match helper: {pattern}"),
-    }
-}
-
-/// Manual check for AC3 subject regex:
-/// `^\[[a-z0-9/_-]+\]\s+(feat|fix|refactor|docs|chore|style|test):\s+\S`
 fn subject_regex_matches(s: &str) -> bool {
     let Some(rest) = s.strip_prefix('[') else {
         return false;
@@ -410,13 +375,14 @@ fn subject_regex_matches(s: &str) -> bool {
     }
     let after_bracket = &rest[close + 1..]; // "] feat: ..."
     let after_bracket = after_bracket.strip_prefix(' ').unwrap_or(after_bracket);
-    let valid_types = [
-        "feat", "fix", "refactor", "docs", "chore", "style", "test",
-    ];
+    let valid_types = ["feat", "fix", "refactor", "docs", "chore", "style", "test"];
     for t in valid_types {
         let prefix = format!("{t}: ");
         if let Some(after_type) = after_bracket.strip_prefix(&prefix) {
-            return after_type.chars().next().map_or(false, |c| !c.is_whitespace());
+            return after_type
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace());
         }
     }
     false

@@ -83,6 +83,32 @@ def load_bot(**env):
         sys.path[:] = old_path
 
 
+class FakeCtx:
+    def __init__(self, category_id=10):
+        self.sent = []
+        self.guild = types.SimpleNamespace(id=1)
+        self.channel = types.SimpleNamespace(
+            id=2,
+            name="development",
+            category=types.SimpleNamespace(id=category_id),
+        )
+        self.message = types.SimpleNamespace(id=3)
+        self.author = types.SimpleNamespace(id=4)
+
+    async def send(self, message):
+        self.sent.append(message)
+
+
+def configure_project(bot, tmp, task):
+    tasks_path = Path(tmp) / "tasks.json"
+    projects_path = Path(tmp) / "projects.json"
+    bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+    bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+    bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+    tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+    return tasks_path
+
+
 class DiscordBotConfigTests(unittest.TestCase):
     def test_tasks_json_path_overrides_per_category_file(self):
         bot = load_bot(TASKS_JSON_PATH="/tmp/stellaris-tasks.json")
@@ -367,6 +393,34 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertEqual(payload["repo_path"], "/home/user/project/MyNewProject")
 
 class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_finalize_approved_task_uses_bounded_json_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_canopus.py"
+            argv_path = Path(tmp) / "argv.json"
+            script.write_text(
+                "import json, pathlib, sys\n"
+                f"pathlib.Path({str(argv_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+                "print(json.dumps({'ok': True, 'status': 'dry_run', 'task_id': 'discord-1'}))\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(CANOPUS_COMMAND=f"{sys.executable} {script}")
+
+            result, error = await bot.finalize_approved_task("/tmp/tasks.json", "discord-1")
+
+            self.assertIsNone(error)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(
+                json.loads(argv_path.read_text(encoding="utf-8")),
+                [
+                    "finalize-approved",
+                    "--tasks",
+                    "/tmp/tasks.json",
+                    "--task-id",
+                    "discord-1",
+                    "--json",
+                ],
+            )
+
     async def test_run_canopus_json_preserves_partial_failure_stdout_object(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "fake_canopus.py"
@@ -384,6 +438,149 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["ok"], False)
             self.assertEqual(result["github_issue_number"], 42)
             self.assertIn("stderr detail", error)
+
+    async def test_run_canopus_json_parses_ok_false_finalize_stdout_on_nonzero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_canopus.py"
+            script.write_text(
+                "import json, sys\n"
+                "print(json.dumps({'ok': False, 'status': 'failed', 'task_id': 'discord-1', 'retryable': True, 'error': {'code': 'git_commit_failed', 'message': 'commit failed', 'retryable': True, 'details': {'stderr': 'boom'}}}))\n"
+                "sys.exit(2)\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(CANOPUS_COMMAND=f"{sys.executable} {script}")
+
+            result, error = await bot.finalize_approved_task("/tmp/tasks.json", "discord-1")
+
+            self.assertEqual(result["ok"], False)
+            self.assertEqual(result["error"]["code"], "git_commit_failed")
+            self.assertIn("commit failed", str(error))
+
+    async def test_approve_persists_before_invoking_finalize_and_reports_commit(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            task = {
+                "task_id": "discord-1",
+                "task_type": {"Custom": "canopus.agent"},
+                "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "pending"}),
+                "meta": {"status": "PendingReview"},
+            }
+            tasks_path = configure_project(bot, tmp, task)
+            calls = []
+
+            async def fake_finalize(path, task_id):
+                calls.append((path, task_id))
+                stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+                self.assertEqual(stored["meta"]["status"], "Processed")
+                self.assertEqual(json.loads(stored["payload"])["approval_state"], "approved")
+                return {
+                    "ok": True,
+                    "status": "finalized",
+                    "task_id": task_id,
+                    "branch": "canopus/agenda-discord-1-discord-1",
+                    "commit": "abc123",
+                }, None
+
+            bot.finalize_approved_task = fake_finalize
+            ctx = FakeCtx()
+
+            await bot.cmd_approve(ctx, task_id="discord-1")
+
+            self.assertEqual(calls, [(str(tasks_path), "discord-1")])
+            self.assertIn("태스크 승인됨", ctx.sent[0])
+            self.assertIn("finalized", ctx.sent[0])
+            self.assertIn("canopus/agenda-discord-1-discord-1", ctx.sent[0])
+            self.assertIn("abc123", ctx.sent[0])
+
+    async def test_approve_failure_does_not_roll_back_and_reports_retry_hint(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            task = {
+                "task_id": "discord-1",
+                "task_type": {"Custom": "canopus.agent"},
+                "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "pending"}),
+                "meta": {"status": "PendingReview"},
+            }
+            tasks_path = configure_project(bot, tmp, task)
+
+            async def fake_finalize(path, task_id):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "task_id": task_id,
+                    "retryable": True,
+                    "error": {"code": "git_commit_failed", "message": "commit failed", "retryable": True, "details": {}},
+                }, "stderr ignored for parsing"
+
+            bot.finalize_approved_task = fake_finalize
+            ctx = FakeCtx()
+
+            await bot.cmd_approve(ctx, task_id="discord-1")
+
+            stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            self.assertEqual(stored["meta"]["status"], "Processed")
+            self.assertEqual(json.loads(stored["payload"])["approval_state"], "approved")
+            self.assertIn("태스크 승인됨", ctx.sent[0])
+            self.assertIn("failed", ctx.sent[0])
+            self.assertIn("commit failed", ctx.sent[0])
+            self.assertIn("!finalize discord-1", ctx.sent[0])
+
+    async def test_approve_without_canopus_command_keeps_approval_and_reports_not_configured(self):
+        bot = load_bot(CANOPUS_COMMAND="")
+        with tempfile.TemporaryDirectory() as tmp:
+            task = {
+                "task_id": "discord-1",
+                "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "pending"}),
+                "meta": {"status": "PendingReview"},
+            }
+            tasks_path = configure_project(bot, tmp, task)
+            ctx = FakeCtx()
+
+            await bot.cmd_approve(ctx, task_id="discord-1")
+
+            stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            self.assertEqual(stored["meta"]["status"], "Processed")
+            self.assertIn("not attempted", ctx.sent[0])
+            self.assertIn("CANOPUS_COMMAND", ctx.sent[0])
+
+    async def test_finalize_retries_approved_processed_task(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            task = {
+                "task_id": "discord-1",
+                "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "approved"}),
+                "meta": {"status": "Processed", "approval_state": "approved"},
+            }
+            tasks_path = configure_project(bot, tmp, task)
+            calls = []
+
+            async def fake_finalize(path, task_id):
+                calls.append((path, task_id))
+                return {"ok": True, "status": "no_changes", "task_id": task_id}, None
+
+            bot.finalize_approved_task = fake_finalize
+            ctx = FakeCtx()
+
+            await bot.cmd_finalize(ctx, task_id="discord-1")
+
+            self.assertEqual(calls, [(str(tasks_path), "discord-1")])
+            self.assertIn("최종화 재시도", ctx.sent[0])
+            self.assertIn("no changes", ctx.sent[0])
+
+    async def test_repeated_approve_on_already_approved_guides_to_finalize(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            task = {
+                "task_id": "discord-1",
+                "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "approved"}),
+                "meta": {"status": "Processed", "approval_state": "approved"},
+            }
+            configure_project(bot, tmp, task)
+            ctx = FakeCtx()
+
+            await bot.cmd_approve(ctx, task_id="discord-1")
+
+            self.assertIn("!finalize discord-1", ctx.sent[0])
 
     async def test_intake_github_work_runs_for_issue_only_registration(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -792,6 +792,69 @@ impl FinalizeArgs {
     }
 }
 
+pub(crate) struct FinalizeApprovedArgs {
+    pub(crate) repo: Option<PathBuf>,
+    pub(crate) state: Option<PathBuf>,
+    pub(crate) tasks_path: PathBuf,
+    pub(crate) task_id: String,
+    pub(crate) json: bool,
+}
+
+impl FinalizeApprovedArgs {
+    pub(crate) fn parse(args: &[String]) -> CanopusResult<Self> {
+        let mut repo = env_non_empty("CANOPUS_REPO")
+            .or_else(|| env_non_empty("CANOPUS_REPO_PATH"))
+            .map(PathBuf::from);
+        let mut state: Option<PathBuf> = env_non_empty("CANOPUS_STATE")
+            .or_else(|| env_non_empty("CANOPUS_STATE_PATH"))
+            .map(PathBuf::from);
+        let mut tasks_path: Option<PathBuf> = None;
+        let mut task_id = None;
+        let mut json = false;
+        let mut index = 0;
+
+        while index < args.len() {
+            match args[index].as_str() {
+                "--repo" => {
+                    index += 1;
+                    repo = Some(PathBuf::from(required_value(args, index, "--repo")?));
+                }
+                "--state" => {
+                    index += 1;
+                    state = Some(PathBuf::from(required_value(args, index, "--state")?));
+                }
+                "--tasks" => {
+                    index += 1;
+                    tasks_path = Some(PathBuf::from(required_value(args, index, "--tasks")?));
+                }
+                "--task-id" => {
+                    index += 1;
+                    task_id = Some(required_value(args, index, "--task-id")?.to_string());
+                }
+                "--json" => json = true,
+                value => {
+                    return Err(CanopusError::InvalidInput(format!(
+                        "unknown finalize-approved argument: {value}"
+                    )));
+                }
+            }
+            index += 1;
+        }
+
+        Ok(Self {
+            repo,
+            state,
+            tasks_path: tasks_path.ok_or_else(|| {
+                CanopusError::InvalidInput("finalize-approved requires --tasks".to_string())
+            })?,
+            task_id: task_id.ok_or_else(|| {
+                CanopusError::InvalidInput("finalize-approved requires --task-id".to_string())
+            })?,
+            json,
+        })
+    }
+}
+
 pub(crate) fn required_value<'a>(
     args: &'a [String],
     index: usize,

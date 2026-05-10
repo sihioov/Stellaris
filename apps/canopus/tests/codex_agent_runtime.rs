@@ -133,8 +133,7 @@ async fn coder_role_can_create_repo_changes_through_real_runtime_path() {
         .any(|pair| pair == ["--sandbox", "workspace-write"]));
     assert_eq!(result.summary, "codex coder completed");
     assert_eq!(result.artifacts[0].kind, ArtifactKind::RuntimeLog);
-    assert!(result.artifacts[0].content.contains("# Codex runtime"));
-    assert!(result.artifacts[0].content.contains("fake final for coder"));
+    assert_eq!(result.artifacts[0].content, "fake final for coder");
 
     let _ = fs::remove_dir_all(repo);
 }

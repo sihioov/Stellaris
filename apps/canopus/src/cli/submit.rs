@@ -598,7 +598,9 @@ fn persist_token_usage(state: &Path, agenda_id: &str, usage: Option<&TokenUsage>
     let runs_dir = state.join("runs");
     let _ = fs::create_dir_all(&runs_dir);
     let path = runs_dir.join(format!("{agenda_id}-token-usage.json"));
-    let Ok(json) = serde_json::to_vec_pretty(usage) else { return };
+    let Ok(json) = serde_json::to_vec_pretty(usage) else {
+        return;
+    };
     let _ = fs::write(path, json);
 }
 

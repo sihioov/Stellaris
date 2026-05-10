@@ -2,7 +2,7 @@
 ///
 /// Format: `canopus/{slug}-{short}`
 /// - slug: first 5 ASCII-only lowercase words from `user_request`, joined with `-`,
-///         falling back to `"task"` if no ASCII words remain
+///   falling back to `"task"` if no ASCII words remain
 /// - short: first 6 hex characters of `run_id`, zero-padded to length 6
 pub fn derive_branch_name(user_request: &str, run_id: &str) -> String {
     // Step 1: lowercase and drop non-ASCII chars
@@ -16,7 +16,11 @@ pub fn derive_branch_name(user_request: &str, run_id: &str) -> String {
     let words: Vec<String> = ascii_only
         .split_whitespace()
         .take(5)
-        .map(|w| w.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>())
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|w| !w.is_empty())
         .collect();
 
@@ -100,9 +104,6 @@ mod tests {
 
     #[test]
     fn test_short_run_id_padding() {
-        assert_eq!(
-            derive_branch_name("hello", "abc"),
-            "canopus/hello-abc000"
-        );
+        assert_eq!(derive_branch_name("hello", "abc"), "canopus/hello-abc000");
     }
 }

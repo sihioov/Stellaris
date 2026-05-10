@@ -31,6 +31,7 @@
 //!
 //! `tempfile` is not in `[dev-dependencies]`.  Tests use the `env::temp_dir()`
 //! + `fs::remove_dir_all` pattern from `tests/v1_smoke.rs`.
+#![allow(clippy::await_holding_lock)]
 
 use canopus::cli;
 use std::{
@@ -51,8 +52,7 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 /// Build an isolated git repo with a single `init` commit, user config set.
 /// Mirrors the `git_repo()` helper in `tests/v1_smoke.rs`.
 fn git_repo(name: &str) -> PathBuf {
-    let root =
-        env::temp_dir().join(format!("canopus-ac6-{name}-{}", std::process::id()));
+    let root = env::temp_dir().join(format!("canopus-ac6-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
 
@@ -90,8 +90,9 @@ fn git_repo(name: &str) -> PathBuf {
 /// `approved` state so that `watch --once` will attempt finalization.
 fn write_approved_tasks(state: &std::path::Path, agenda_id: &str) -> PathBuf {
     let tasks_path = state.join("tasks.json");
+    let task_id = task_id_for(agenda_id);
     let json = serde_json::json!([{
-        "task_id": format!("test-task-{agenda_id}"),
+        "task_id": task_id,
         "payload": serde_json::to_string(&serde_json::json!({
             "agenda_id": agenda_id,
             "approval_state": "approved",
@@ -101,6 +102,14 @@ fn write_approved_tasks(state: &std::path::Path, agenda_id: &str) -> PathBuf {
     }]);
     fs::write(&tasks_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
     tasks_path
+}
+
+fn task_id_for(agenda_id: &str) -> String {
+    format!("test-task-{agenda_id}")
+}
+
+fn run_id_for(agenda_id: &str) -> String {
+    format!("{agenda_id}-{}", task_id_for(agenda_id))
 }
 
 /// Return the path where `watch` would write the finalize sidecar.
@@ -116,10 +125,7 @@ struct EnvRestore {
 impl EnvRestore {
     fn capture(keys: &[&'static str]) -> Self {
         Self {
-            values: keys
-                .iter()
-                .map(|key| (*key, env::var(key).ok()))
-                .collect(),
+            values: keys.iter().map(|key| (*key, env::var(key).ok())).collect(),
         }
     }
 }
@@ -142,10 +148,7 @@ impl Drop for EnvRestore {
 #[tokio::test]
 async fn no_changes_returns_ok_without_branch_or_commit() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let _restore = EnvRestore::capture(&[
-        "CANOPUS_ALLOW_LOCAL_COMMIT",
-        "DISCORD_WEBHOOK_URL",
-    ]);
+    let _restore = EnvRestore::capture(&["CANOPUS_ALLOW_LOCAL_COMMIT", "DISCORD_WEBHOOK_URL"]);
 
     let repo = git_repo("no-changes");
     let state = repo.join(".canopus");
@@ -167,6 +170,13 @@ async fn no_changes_returns_ok_without_branch_or_commit() {
     // Do NOT write any modified files — the working tree is clean.
 
     let agenda_id = "agenda-no-changes-ac6b";
+    let run_id = run_id_for(agenda_id);
+    let expected_branch = format!("canopus/{run_id}");
+    Command::new("git")
+        .args(["checkout", "-b", &expected_branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
     let tasks_path = write_approved_tasks(&state, agenda_id);
 
     env::set_var("CANOPUS_ALLOW_LOCAL_COMMIT", "1");
@@ -186,7 +196,7 @@ async fn no_changes_returns_ok_without_branch_or_commit() {
     .unwrap();
 
     // Finalize sidecar must exist — the no-changes path still writes it.
-    let sidecar = finalize_path(&state, agenda_id);
+    let sidecar = finalize_path(&state, &run_id);
     assert!(
         sidecar.exists(),
         "finalize sidecar should be written even for no-changes: {}",
@@ -198,16 +208,14 @@ async fn no_changes_returns_ok_without_branch_or_commit() {
         "finalize record should mention no-changes skip: {record}"
     );
 
-    // No canopus/* branch should exist.
-    let branches = Command::new("git")
-        .args(["branch", "-a"])
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
         .current_dir(&repo)
         .output()
         .unwrap();
-    let branch_out = String::from_utf8_lossy(&branches.stdout);
-    assert!(
-        !branch_out.contains("canopus/"),
-        "no canopus branch should be created when there are no changes: {branch_out}"
+    assert_eq!(
+        String::from_utf8_lossy(&branch.stdout).trim(),
+        expected_branch
     );
 
     // Git log should show only the two initial commits (init + add gitignore).
@@ -233,10 +241,7 @@ async fn no_changes_returns_ok_without_branch_or_commit() {
 #[tokio::test]
 async fn detached_head_fails_preflight() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let _restore = EnvRestore::capture(&[
-        "CANOPUS_ALLOW_LOCAL_COMMIT",
-        "DISCORD_WEBHOOK_URL",
-    ]);
+    let _restore = EnvRestore::capture(&["CANOPUS_ALLOW_LOCAL_COMMIT", "DISCORD_WEBHOOK_URL"]);
 
     let repo = git_repo("detached-head");
     let state = repo.join(".canopus");
@@ -291,7 +296,7 @@ async fn detached_head_fails_preflight() {
     .unwrap(); // watch swallows the error; we assert via side effects
 
     // No finalize sidecar should have been written (pre-flight failed).
-    let sidecar = finalize_path(&state, agenda_id);
+    let sidecar = finalize_path(&state, &run_id_for(agenda_id));
     assert!(
         !sidecar.exists(),
         "finalize sidecar must NOT be written when HEAD is detached: {}",
@@ -320,10 +325,7 @@ async fn detached_head_fails_preflight() {
 #[tokio::test]
 async fn dirty_index_fails_preflight() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let _restore = EnvRestore::capture(&[
-        "CANOPUS_ALLOW_LOCAL_COMMIT",
-        "DISCORD_WEBHOOK_URL",
-    ]);
+    let _restore = EnvRestore::capture(&["CANOPUS_ALLOW_LOCAL_COMMIT", "DISCORD_WEBHOOK_URL"]);
 
     let repo = git_repo("dirty-index");
     let state = repo.join(".canopus");
@@ -370,7 +372,7 @@ async fn dirty_index_fails_preflight() {
     .unwrap();
 
     // Pre-flight 2 (index dirty) fires before branch creation — no sidecar.
-    let sidecar = finalize_path(&state, agenda_id);
+    let sidecar = finalize_path(&state, &run_id_for(agenda_id));
     assert!(
         !sidecar.exists(),
         "finalize sidecar must NOT be written when index is dirty: {}",
@@ -398,10 +400,7 @@ async fn dirty_index_fails_preflight() {
 #[tokio::test]
 async fn canopus_not_gitignored_fails_preflight() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let _restore = EnvRestore::capture(&[
-        "CANOPUS_ALLOW_LOCAL_COMMIT",
-        "DISCORD_WEBHOOK_URL",
-    ]);
+    let _restore = EnvRestore::capture(&["CANOPUS_ALLOW_LOCAL_COMMIT", "DISCORD_WEBHOOK_URL"]);
 
     // Build repo WITHOUT adding .canopus/ to .gitignore.
     let repo = git_repo("not-gitignored");
@@ -432,7 +431,7 @@ async fn canopus_not_gitignored_fails_preflight() {
     .unwrap();
 
     // Pre-flight 3 (.canopus/ not ignored) fires before branch creation.
-    let sidecar = finalize_path(&state, agenda_id);
+    let sidecar = finalize_path(&state, &run_id_for(agenda_id));
     assert!(
         !sidecar.exists(),
         "finalize sidecar must NOT be written when .canopus/ is not gitignored: {}",
@@ -454,7 +453,7 @@ async fn canopus_not_gitignored_fails_preflight() {
 }
 
 // ---------------------------------------------------------------------------
-// AC6(c): branch collision → suffix applied; actual branch is base-2
+// AC6(c): finalization no longer creates collision-suffix branches
 // ---------------------------------------------------------------------------
 //
 // Note: only one collision (suffix=2) is tested here. Triggering namespace
@@ -462,12 +461,9 @@ async fn canopus_not_gitignored_fails_preflight() {
 // swallowed by watch() anyway. This is sufficient for V1.5 acceptance.
 
 #[tokio::test]
-async fn branch_collision_uses_suffix() {
+async fn local_commit_only_uses_current_submit_branch_without_suffix() {
     let _guard = ENV_LOCK.lock().unwrap();
-    let _restore = EnvRestore::capture(&[
-        "CANOPUS_ALLOW_LOCAL_COMMIT",
-        "DISCORD_WEBHOOK_URL",
-    ]);
+    let _restore = EnvRestore::capture(&["CANOPUS_ALLOW_LOCAL_COMMIT", "DISCORD_WEBHOOK_URL"]);
 
     let repo = git_repo("branch-collision");
     let state = repo.join(".canopus");
@@ -489,18 +485,17 @@ async fn branch_collision_uses_suffix() {
     // Write a change so there is something to commit.
     fs::write(repo.join("work.txt"), "agent output\n").unwrap();
 
-    // agenda_id chosen so derive_branch_name("", agenda_id) produces a known
-    // base name we can pre-create.  run_id == agenda_id (sanitized); short =
-    // first 6 hex chars of "agenda-coll-ab1234" → a,e,a,-,c,o... wait, we
-    // need to trace: chars that pass is_ascii_hexdigit() from "agenda-coll-ab1234":
-    //   a(yes), g(no), e(yes), n(no), d(yes), a(yes), -(no), c(yes), o(no),
-    //   l(no), l(no), -(no), a(yes), b(yes) → first 6: a,e,d,a,c,a → "aedaca"
-    // branch base = "canopus/task-aedaca"
     let agenda_id = "agenda-coll-ab1234";
-    // Verify derivation is deterministic by pre-creating the base branch.
-    let base_branch = "canopus/task-aedaca";
+    let run_id = run_id_for(agenda_id);
+    let obsolete_finalizer_branch = "canopus/task-aedaca";
     Command::new("git")
-        .args(["branch", base_branch])
+        .args(["branch", obsolete_finalizer_branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let expected_branch = format!("canopus/{run_id}");
+    Command::new("git")
+        .args(["checkout", "-b", &expected_branch])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -523,21 +518,20 @@ async fn branch_collision_uses_suffix() {
     .await
     .unwrap();
 
-    // Finalize sidecar must exist (commit succeeded on the -2 branch).
-    let sidecar = finalize_path(&state, agenda_id);
+    // Finalize sidecar must exist (commit succeeded on the existing branch).
+    let sidecar = finalize_path(&state, &run_id);
     assert!(
         sidecar.exists(),
-        "finalize sidecar must be written when collision is resolved via suffix: {}",
+        "finalize sidecar must be written on existing submit branch: {}",
         sidecar.display()
     );
     let record = fs::read_to_string(&sidecar).unwrap();
-    let expected_collision_branch = format!("{base_branch}-2");
     assert!(
-        record.contains(&expected_collision_branch),
-        "finalize record should mention the -2 branch; record: {record}"
+        record.contains(&expected_branch),
+        "finalize record should mention the existing branch; record: {record}"
     );
 
-    // The -2 branch must exist in the repo.
+    // No suffix branch should be created.
     let branches = Command::new("git")
         .args(["branch", "-a"])
         .current_dir(&repo)
@@ -545,8 +539,8 @@ async fn branch_collision_uses_suffix() {
         .unwrap();
     let branch_out = String::from_utf8_lossy(&branches.stdout);
     assert!(
-        branch_out.contains(&expected_collision_branch),
-        "branch {expected_collision_branch} must exist after collision suffix applied: {branch_out}"
+        !branch_out.contains("canopus/task-aedaca-2"),
+        "finalization must not create a suffix branch: {branch_out}"
     );
 
     let _ = fs::remove_dir_all(&repo);

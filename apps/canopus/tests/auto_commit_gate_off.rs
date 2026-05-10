@@ -11,6 +11,7 @@
 //! acquires its own process-local `ENV_LOCK` (defined below) to prevent races when
 //! multiple tests mutate `CANOPUS_ALLOW_LOCAL_COMMIT`. This is safe because
 //! integration tests in the same test binary share a process.
+#![allow(clippy::await_holding_lock)]
 
 use canopus::cli;
 use std::fs;
@@ -22,10 +23,7 @@ use std::sync::{LazyLock, Mutex};
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn git_repo(name: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "canopus-gate-off-{name}-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("canopus-gate-off-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
 
@@ -85,6 +83,29 @@ fn approved_tasks_json(agenda_id: &str) -> String {
     .unwrap()
 }
 
+fn run_id_for(agenda_id: &str) -> String {
+    format!("{agenda_id}-{agenda_id}")
+}
+
+async fn run_watch_once(
+    repo: &std::path::Path,
+    state: &std::path::Path,
+    tasks_path: &std::path::Path,
+) {
+    cli::run(vec![
+        "canopus".to_string(),
+        "watch".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+        "--state".to_string(),
+        state.display().to_string(),
+        "--once".to_string(),
+        tasks_path.display().to_string(),
+    ])
+    .await
+    .unwrap();
+}
+
 // ─────────────────────────────────────────────────────────────
 // TC1: CANOPUS_ALLOW_LOCAL_COMMIT unset → DryRun, no new commit
 // ─────────────────────────────────────────────────────────────
@@ -118,9 +139,10 @@ async fn watch_uses_dry_run_when_env_flag_unset() {
     .unwrap();
 
     // Finalize sidecar must exist and declare DryRun mode.
-    let finalize_path = state
-        .join("runs")
-        .join("agenda-gate-off-unset-finalize.txt");
+    let finalize_path = state.join("runs").join(format!(
+        "{}-finalize.txt",
+        run_id_for("agenda-gate-off-unset")
+    ));
     assert!(
         finalize_path.exists(),
         "watch must write a finalize sidecar even in DryRun mode"
@@ -176,9 +198,10 @@ async fn watch_uses_dry_run_when_env_flag_explicitly_zero() {
     .await
     .unwrap();
 
-    let finalize_path = state
-        .join("runs")
-        .join("agenda-gate-off-zero-finalize.txt");
+    let finalize_path = state.join("runs").join(format!(
+        "{}-finalize.txt",
+        run_id_for("agenda-gate-off-zero")
+    ));
     let record = fs::read_to_string(&finalize_path).unwrap();
     assert!(
         record.contains("finalize mode: DryRun"),
@@ -224,6 +247,15 @@ async fn watch_uses_local_commit_only_when_env_flag_set() {
         .current_dir(&repo)
         .output()
         .unwrap();
+    Command::new("git")
+        .args([
+            "checkout",
+            "-b",
+            &format!("canopus/{}", run_id_for("agenda-gate-on")),
+        ])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
 
     // Write a tracked change for the commit to pick up.
     fs::write(repo.join("work.txt"), "agent output\n").unwrap();
@@ -244,7 +276,9 @@ async fn watch_uses_local_commit_only_when_env_flag_set() {
     .await
     .unwrap();
 
-    let finalize_path = state.join("runs").join("agenda-gate-on-finalize.txt");
+    let finalize_path = state
+        .join("runs")
+        .join(format!("{}-finalize.txt", run_id_for("agenda-gate-on")));
     assert!(
         finalize_path.exists(),
         "watch must write a finalize sidecar in LocalCommitOnly mode"
@@ -265,6 +299,69 @@ async fn watch_uses_local_commit_only_when_env_flag_set() {
     assert!(
         subject.contains("agenda-gate-on") || subject.contains("complete agenda"),
         "LocalCommitOnly must produce a commit whose subject references the agenda; got: {subject}"
+    );
+
+    std::env::remove_var("CANOPUS_ALLOW_LOCAL_COMMIT");
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[tokio::test]
+async fn watch_gate_on_upgrades_prior_dry_run_sidecar_to_local_commit() {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let repo = git_repo("gate-on-upgrades-dry-run");
+    let state = repo.join(".canopus");
+    fs::create_dir_all(&state).unwrap();
+
+    fs::write(repo.join(".gitignore"), ".canopus/\n").unwrap();
+    Command::new("git")
+        .args(["add", ".gitignore"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "add gitignore"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    let agenda_id = "agenda-gate-on-upgrade";
+    let run_id = run_id_for(agenda_id);
+    let branch = format!("canopus/{run_id}");
+    Command::new("git")
+        .args(["checkout", "-b", &branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    fs::write(repo.join("work.txt"), "agent output\n").unwrap();
+    let tasks_path = state.join("tasks.json");
+    fs::write(&tasks_path, approved_tasks_json(agenda_id)).unwrap();
+    let finalize_path = state.join("runs").join(format!("{run_id}-finalize.txt"));
+
+    std::env::set_var("CANOPUS_ALLOW_LOCAL_COMMIT", "0");
+    run_watch_once(&repo, &state, &tasks_path).await;
+    let dry_record = fs::read_to_string(&finalize_path).unwrap();
+    assert!(
+        dry_record.contains("finalize mode: DryRun"),
+        "first watch pass should record DryRun; got: {dry_record}"
+    );
+    assert_eq!(latest_commit_subject(&repo), "add gitignore");
+
+    std::env::set_var("CANOPUS_ALLOW_LOCAL_COMMIT", "1");
+    run_watch_once(&repo, &state, &tasks_path).await;
+    let upgraded_record = fs::read_to_string(&finalize_path).unwrap();
+    assert!(
+        upgraded_record.contains("finalize mode: LocalCommitOnly"),
+        "gate-on watch pass must upgrade prior DryRun record; got: {upgraded_record}"
+    );
+    assert!(
+        upgraded_record.contains("commit: "),
+        "upgraded record should capture the local commit sha; got: {upgraded_record}"
+    );
+    assert!(
+        latest_commit_subject(&repo).contains("complete agenda"),
+        "gate-on watch pass should commit pending work"
     );
 
     std::env::remove_var("CANOPUS_ALLOW_LOCAL_COMMIT");

@@ -95,6 +95,16 @@ async def intake_github_work(project: dict, task_id: str, agenda_id: str, reques
     return await run_canopus_json(args)
 
 
+async def finalize_approved_task(tasks_path: str, task_id: str) -> tuple[dict | None, str | None]:
+    args = [
+        "finalize-approved",
+        "--tasks", tasks_path,
+        "--task-id", task_id,
+        "--json",
+    ]
+    return await run_canopus_json(args)
+
+
 def mark_proposal_intake_failed(task: dict, error: str) -> None:
     payload = _payload_data(task)
     payload["proposal_intake_state"] = "failed"

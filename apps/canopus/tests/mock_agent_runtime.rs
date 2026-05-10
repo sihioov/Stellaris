@@ -97,6 +97,7 @@ fn agent_run_result_round_trips_message_log_schema() {
             content: "plan drafted".to_string(),
             created_at,
         }],
+        token_usage: None,
     };
 
     let encoded = serde_json::to_string(&result).unwrap();

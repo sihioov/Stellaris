@@ -102,7 +102,11 @@ mod tests {
         assert_eq!(result.len(), 5);
         assert!(result.contains(&"misc".to_string()));
         // first 4 are the lexicographic top-4 of the 5 unique names
-        let top4: Vec<&str> = result.iter().filter(|m| m.as_str() != "misc").map(|s| s.as_str()).collect();
+        let top4: Vec<&str> = result
+            .iter()
+            .filter(|m| m.as_str() != "misc")
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(top4.len(), 4);
     }
 

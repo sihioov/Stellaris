@@ -22,6 +22,7 @@
 /// Agent-Runtime: {runtime} ({model})
 /// ```
 #[allow(unused_variables)]
+#[allow(clippy::too_many_arguments)]
 pub fn format_commit_message(
     reviewer_summary: &str,
     modules: &[String],
@@ -40,9 +41,7 @@ pub fn format_commit_message(
     };
 
     // Escape user_request: backtick → \` and double-quote → \"
-    let escaped = user_request
-        .replace('`', r"\`")
-        .replace('"', "\\\"");
+    let escaped = user_request.replace('`', r"\`").replace('"', "\\\"");
 
     // Multi-line user_request: first line after "!run ", subsequent lines indented 2 spaces
     let user_request_line = if escaped.contains('\n') {
@@ -76,32 +75,74 @@ pub fn format_commit_message(
 mod tests {
     use super::*;
 
-    fn make(modules: &[&str], commit_type: &str, summary: &str, body: &str, user_request: &str) -> String {
+    fn make(
+        modules: &[&str],
+        commit_type: &str,
+        summary: &str,
+        body: &str,
+        user_request: &str,
+    ) -> String {
         let mods: Vec<String> = modules.iter().map(|s| s.to_string()).collect();
-        format_commit_message("", &mods, commit_type, summary, body, user_request, "codex", "gpt-5.5")
+        format_commit_message(
+            "",
+            &mods,
+            commit_type,
+            summary,
+            body,
+            user_request,
+            "codex",
+            "gpt-5.5",
+        )
     }
 
     #[test]
     fn test_subject_regex_match() {
-        let out = make(&["canopus"], "feat", "add something", "body here", "request");
+        let out = make(
+            &["canopus"],
+            "feat",
+            "add something",
+            "body here",
+            "request",
+        );
         let first_line = out.lines().next().unwrap();
         // Regex: ^\[[a-z0-9/_-]+\]\s+(feat|fix|refactor|docs|chore|style|test):\s+\S
         assert!(first_line.starts_with('['));
         let close = first_line.find(']').expect("closing bracket");
         let bracket_content = &first_line[1..close];
-        assert!(bracket_content.chars().all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '-'));
+        assert!(bracket_content
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '-'));
         let after = &first_line[close + 1..];
         assert!(after.starts_with(' '));
         let valid_types = ["feat", "fix", "refactor", "docs", "chore", "style", "test"];
-        let found = valid_types.iter().any(|t| after.trim_start().starts_with(&format!("{}:", t)));
-        assert!(found, "subject line did not match expected commit type pattern: {}", first_line);
+        let found = valid_types
+            .iter()
+            .any(|t| after.trim_start().starts_with(&format!("{}:", t)));
+        assert!(
+            found,
+            "subject line did not match expected commit type pattern: {}",
+            first_line
+        );
     }
 
     #[test]
     fn test_multi_module_bracket() {
         let mods: Vec<String> = vec!["canopus".into(), "laniakea".into()];
-        let out = format_commit_message("", &mods, "feat", "add routing", "body", "req", "codex", "gpt-5.5");
-        assert!(out.lines().next().unwrap().starts_with("[canopus/laniakea] "));
+        let out = format_commit_message(
+            "",
+            &mods,
+            "feat",
+            "add routing",
+            "body",
+            "req",
+            "codex",
+            "gpt-5.5",
+        );
+        assert!(out
+            .lines()
+            .next()
+            .unwrap()
+            .starts_with("[canopus/laniakea] "));
     }
 
     #[test]
@@ -114,7 +155,9 @@ mod tests {
     fn test_trailer_order() {
         let out = make(&["canopus"], "fix", "fix thing", "body", "req");
         let ur = out.find("User-Request:").expect("User-Request not found");
-        let ca = out.find("Co-Authored-By:").expect("Co-Authored-By not found");
+        let ca = out
+            .find("Co-Authored-By:")
+            .expect("Co-Authored-By not found");
         let ar = out.find("Agent-Runtime:").expect("Agent-Runtime not found");
         assert!(ur < ca, "User-Request must come before Co-Authored-By");
         assert!(ca < ar, "Co-Authored-By must come before Agent-Runtime");
@@ -124,19 +167,31 @@ mod tests {
     fn test_backtick_escape() {
         let out = make(&["canopus"], "fix", "fix null", "body", "fix `null` check");
         // escaped form: \`null\`
-        assert!(out.contains(r"User-Request: !run fix \`null\` check"), "output: {}", out);
+        assert!(
+            out.contains(r"User-Request: !run fix \`null\` check"),
+            "output: {}",
+            out
+        );
     }
 
     #[test]
     fn test_quote_escape() {
         let out = make(&["canopus"], "fix", "say hi", "body", r#"say "hi""#);
-        assert!(out.contains(r#"User-Request: !run say \"hi\""#), "output: {}", out);
+        assert!(
+            out.contains(r#"User-Request: !run say \"hi\""#),
+            "output: {}",
+            out
+        );
     }
 
     #[test]
     fn test_multiline_user_request() {
         let out = make(&["canopus"], "feat", "multi", "body", "line1\nline2");
-        assert!(out.contains("User-Request: !run line1\n  line2"), "output: {}", out);
+        assert!(
+            out.contains("User-Request: !run line1\n  line2"),
+            "output: {}",
+            out
+        );
     }
 
     #[test]
@@ -149,7 +204,16 @@ mod tests {
     #[test]
     fn test_trailer_values_present() {
         let mods: Vec<String> = vec!["canopus".into()];
-        let out = format_commit_message("", &mods, "feat", "something", "body", "req", "codex", "gpt-5.5");
+        let out = format_commit_message(
+            "",
+            &mods,
+            "feat",
+            "something",
+            "body",
+            "req",
+            "codex",
+            "gpt-5.5",
+        );
         assert!(out.contains("Co-Authored-By: Canopus <noreply@stellaris.local>"));
         assert!(out.contains("Agent-Runtime: codex (gpt-5.5)"));
     }

@@ -91,9 +91,27 @@ Review these artifacts before approving a task:
 
 Approve only when stage records and artifacts match the requested scope and no live mutation gate was required. Reject when the task is off-scope, validation is missing/failed, artifacts are inconsistent, or a gate violation appears.
 
-## 5. Finalize and delivery-gate dry-run
+## 5. Finalize and delivery-gate dry-run/local commit
 
-After approval moves a task to `Processed`, run one finalizer tick:
+Discord approval now triggers bounded Canopus finalization directly:
+
+```text
+!approve <task_id>
+```
+
+Europa first persists the approval (`Processed`, `approval_state=approved`, `finalize_requested_at`), then invokes:
+
+```bash
+canopus finalize-approved --tasks <tasks.json> --task-id <task_id> --json
+```
+
+If this finalization step fails, approval is not rolled back. Fix the reported repo/gate condition and retry from Discord:
+
+```text
+!finalize <task_id>
+```
+
+`canopus watch` remains optional/background-compatible for batch or operator-driven sweeps:
 
 ```bash
 # Europa-routed (multi-project): state root derived from task payload repo_path
@@ -108,14 +126,14 @@ Expected closure artifacts:
 - `<repo_path>/.canopus/runs/<run_id>-finalize.txt` (state root derived from task payload `repo_path`; falls back to `CANOPUS_STATE` for single-project self-hosting)
 - `<repo_path>/.canopus/runs/<run_id>-delivery-gate.json` after PR-C5
 
-The finalize record is dry-run evidence. It must state that git add/commit/push, `gh pr create`, and issue close were skipped unless a later live ramp-up spec explicitly opens those gates.
+With `CANOPUS_ALLOW_LOCAL_COMMIT=1`, Canopus may create a **local commit only** on the existing submit-created task branch. It must not push, create a PR, merge, deploy, or create a worktree in this first-pass flow. Without that gate, the finalize record is dry-run/gate-disabled evidence and must not imply a local commit. A previous DryRun sidecar is observational only and must not block a later gate-on local commit.
 
 ## 6. Failure recovery
 
 - **Stuck `Pending` task**: confirm TON618 is reading `TASKS_JSON_PATH`; run a bounded dispatch/smoke test or restart TON618.
 - **Stuck `Dispatched` task**: confirm Laniakea has `LANIAKEA_SOURCE=file`, `LANIAKEA_FILE_PATH=$TASKS_JSON_PATH`, `CANOPUS_REPO_PATH`, and `CANOPUS_STATE_PATH`. Note: these env vars are fallback only — Europa-driven flows derive state from payload `repo_path`; see §11 if tasks dispatch to the wrong project state.
 - **Stuck `PendingReview` task**: inspect run records/artifacts, then use the Discord approval/rejection command or update through the approved Canopus/Europa path.
-- **Missing finalize record**: verify task status is `Processed`, then rerun `canopus watch --once` with the correct state and task file.
+- **Missing/failing finalize record**: verify task status is `Processed` and payload approval evidence is present, then run `!finalize <task_id>` from Discord. For operator sweeps, `canopus watch --once <tasks.json>` is still available.
 - **validate-read-only skipped**: set the missing token/project/probe env keys or pass `-GitHubProjectItemId` / `-GitHubIssueNumber`, then rerun `scripts/validate-read-only.ps1`.
 - **validate-read-only fails**: keep mutation gates closed, inspect the error, and rerun with read permissions only. Do not switch to `mutate-live` inside this V1 closure stack.
 
@@ -175,8 +193,8 @@ This is the minimal live slice intended for the first Discord-operated deploymen
 3. Europa calls `canopus work-intake` when the project registration has `github_owner` and `github_repo`.
 4. Canopus creates a GitHub Issue and returns issue metadata to the task payload.
 5. If project sync data and gates are complete, Canopus may also sync Project v2 according to `--project-sync`; otherwise issue creation still succeeds in best-effort mode.
-6. Use `!approve <task_id>` only after review. Approval writes `approval_state=approved`, `finalize_requested_at`, and Discord provenance (`approved_by`, `approval_source=discord`, `approval_message_url`).
-7. `canopus watch --once <tasks.json>` finalizes only `Processed` tasks that contain both approval evidence and a finalize request in the decoded payload. For single-project self-hosting this lands in the Stellaris root `.canopus/`; for multi-project flows, finalize records land under each project's own `.canopus/` — see §11.
+6. Use `!approve <task_id>` only after review. Approval writes `approval_state=approved`, `finalize_requested_at`, and Discord provenance (`approved_by`, `approval_source=discord`, `approval_message_url`), then calls bounded Canopus finalization for that task.
+7. If finalization fails, use `!finalize <task_id>` to retry the already-approved `Processed` task. `canopus watch --once <tasks.json>` remains optional and finalizes only `Processed` tasks that contain both approval evidence and a finalize request in the decoded payload. For single-project self-hosting this lands in the Stellaris root `.canopus/`; for multi-project flows, finalize records land under each project's own `.canopus/` — see §11.
 
 ### Required gates for Issue creation
 

@@ -1,12 +1,14 @@
 use crate::adapters::github::GitHubClient;
 use crate::adapters::tool_gateway::LocalToolGateway;
-use crate::cli::args::{derive_state_with_source, env_flag, FinalizeArgs, WatchArgs};
+use crate::cli::args::{
+    derive_state_with_source, env_flag, FinalizeApprovedArgs, FinalizeArgs, WatchArgs,
+};
 use crate::cli::commands::delivery_finalize::DeliveryGateReport;
-use crate::core::branch_naming::{derive_branch_name, with_collision_suffix};
 use crate::core::commit_message::format_commit_message;
 use crate::core::module_derivation::derive_modules;
 use crate::core::{derive_run_identity, CanopusError, CanopusResult};
 use crate::ports::ToolGateway;
+use serde::Serialize;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,7 +26,7 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
         match approved_processed_tasks(&parsed.tasks_path) {
             Ok(tasks) if !tasks.is_empty() => {
                 for task in tasks {
-                    let run_id = derive_run_identity(Some(&task.run_id), None)?;
+                    let run_id = task.run_id.clone();
                     let (task_state, state_source) =
                         derive_state_with_source(task.repo_path.as_deref(), &parsed.state);
                     log::info!(
@@ -33,6 +35,11 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                         state_source.as_str()
                     );
                     let finalize_path = finalize_record_path(&task_state, &run_id);
+                    let mode = if env_flag("CANOPUS_ALLOW_LOCAL_COMMIT") {
+                        FinalizeMode::LocalCommitOnly
+                    } else {
+                        FinalizeMode::DryRun
+                    };
                     // PR-B migration-window idempotency guard (plan §5.1 / §5.4):
                     // when payload-derived state diverges from the watch-side
                     // --state argument, a previous release may have persisted
@@ -41,7 +48,7 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                     // this fallback one release after PR-B lands.
                     let legacy_finalize_path = (parsed.state != task_state)
                         .then(|| finalize_record_path(&parsed.state, &run_id));
-                    if finalize_path.exists() {
+                    if should_skip_existing_finalize_record(&finalize_path, mode) {
                         if let Err(e) = persist_delivery_gate_report_if_absent(&task_state, &run_id)
                         {
                             log::error!(
@@ -56,7 +63,9 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                         );
                         continue;
                     }
-                    if let Some(legacy) = legacy_finalize_path.as_ref().filter(|path| path.exists())
+                    if let Some(legacy) = legacy_finalize_path
+                        .as_ref()
+                        .filter(|path| should_skip_existing_finalize_record(path, mode))
                     {
                         log::info!(
                             "[watch] legacy finalize record present at {}; skipping {} (PR-B migration-window guard)",
@@ -82,15 +91,10 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                     log::info!("[watch] Processed 태스크 발견: {}", task.task_id);
                     let branch = format!("canopus/{run_id}");
                     let repo = task.repo_path.as_deref().unwrap_or(&parsed.repo);
-                    let mode = if env_flag("CANOPUS_ALLOW_LOCAL_COMMIT") {
-                        FinalizeMode::LocalCommitOnly
-                    } else {
-                        FinalizeMode::DryRun
-                    };
                     match post_approval(repo, &branch, &run_id, None, &tools, mode)
                         .await
                         .and_then(|output| {
-                            persist_finalize_record_if_absent(&task_state, &run_id, &output)
+                            persist_finalize_record_for_mode(&task_state, &run_id, &output, mode)
                         })
                         .and_then(|()| persist_delivery_gate_report_if_absent(&task_state, &run_id))
                     {
@@ -119,6 +123,7 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ApprovedProcessedTask {
     task_id: String,
+    agenda_id: String,
     run_id: String,
     repo_path: Option<PathBuf>,
 }
@@ -172,7 +177,7 @@ fn approved_processed_tasks(tasks_path: &Path) -> CanopusResult<Vec<ApprovedProc
             continue;
         };
         let _ = finalize_requested_at;
-        let run_id = payload
+        let agenda_id = payload
             .get("agenda_id")
             .or_else(|| payload.get("canopus_agenda_id"))
             .or_else(|| payload.get("run_id"))
@@ -180,6 +185,7 @@ fn approved_processed_tasks(tasks_path: &Path) -> CanopusResult<Vec<ApprovedProc
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(task_id)
             .to_string();
+        let run_id = derive_approved_run_id(&payload, &agenda_id, task_id)?;
         let repo_path = payload
             .get("repo_path")
             .and_then(Value::as_str)
@@ -188,11 +194,28 @@ fn approved_processed_tasks(tasks_path: &Path) -> CanopusResult<Vec<ApprovedProc
             .map(PathBuf::from);
         approved.push(ApprovedProcessedTask {
             task_id: task_id.to_string(),
+            agenda_id,
             run_id,
             repo_path,
         });
     }
     Ok(approved)
+}
+
+fn derive_approved_run_id(
+    payload: &serde_json::Map<String, Value>,
+    agenda_id: &str,
+    task_id: &str,
+) -> CanopusResult<String> {
+    if let Some(recorded_run_id) = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return derive_run_identity(Some(recorded_run_id), None);
+    }
+    derive_run_identity(Some(agenda_id), Some(task_id))
 }
 
 fn decoded_payload(value: Option<&Value>) -> Option<serde_json::Map<String, Value>> {
@@ -233,11 +256,461 @@ pub(crate) async fn finalize(args: &[String]) -> CanopusResult<()> {
     Ok(())
 }
 
+pub(crate) async fn finalize_approved(args: &[String]) -> CanopusResult<()> {
+    let parsed = match FinalizeApprovedArgs::parse(args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            if args.iter().any(|arg| arg == "--json") {
+                let response = FinalizeApprovedResponse::failure(
+                    None,
+                    "invalid_arguments",
+                    err.to_string(),
+                    false,
+                    serde_json::json!({}),
+                );
+                print_finalize_approved_json(&response)?;
+            }
+            return Err(err);
+        }
+    };
+
+    let result = finalize_approved_inner(&parsed).await;
+    match result {
+        Ok(response) => {
+            if parsed.json {
+                print_finalize_approved_json(&response)?;
+            } else {
+                println!(
+                    "finalize-approved: {} {}",
+                    response.task_id.as_deref().unwrap_or("(unknown)"),
+                    response.status
+                );
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if parsed.json {
+                print_finalize_approved_json(&error.response)?;
+            }
+            Err(CanopusError::Runtime(error.message))
+        }
+    }
+}
+
+async fn finalize_approved_inner(
+    parsed: &FinalizeApprovedArgs,
+) -> Result<FinalizeApprovedResponse, FinalizeApprovedFailure> {
+    let task = select_approved_task(&parsed.tasks_path, &parsed.task_id)?;
+    let repo = task
+        .repo_path
+        .clone()
+        .or_else(|| parsed.repo.clone())
+        .ok_or_else(|| {
+            finalize_failure(
+                Some(&task),
+                "repo_path_missing",
+                "approved task payload does not include repo_path and --repo was not provided",
+                true,
+                serde_json::json!({ "tasks_path": parsed.tasks_path }),
+            )
+        })?;
+    let parsed_state = parsed
+        .state
+        .clone()
+        .unwrap_or_else(|| repo.join(".canopus"));
+    let (task_state, _) = derive_state_with_source(Some(&repo), &parsed_state);
+    let mode = if env_flag("CANOPUS_ALLOW_LOCAL_COMMIT") {
+        FinalizeMode::LocalCommitOnly
+    } else {
+        FinalizeMode::DryRun
+    };
+    let branch = format!("canopus/{}", task.run_id);
+    let sidecar_path = finalize_record_path(&task_state, &task.run_id);
+
+    if should_skip_existing_finalize_record_for_branch(&sidecar_path, mode, &branch) {
+        let commit = read_commit_from_record(&sidecar_path);
+        let status = if matches!(mode, FinalizeMode::DryRun) {
+            "dry_run"
+        } else {
+            "already_finalized"
+        };
+        return Ok(FinalizeApprovedResponse::success(
+            &task,
+            status,
+            mode,
+            &repo,
+            &branch,
+            commit,
+            &sidecar_path,
+            true,
+            vec![],
+        ));
+    }
+
+    let tools = LocalToolGateway;
+    let output = post_approval(&repo, &branch, &task.run_id, None, &tools, mode)
+        .await
+        .map_err(|err| {
+            finalize_failure(
+                Some(&task),
+                classify_finalize_error(&err),
+                err.to_string(),
+                true,
+                serde_json::json!({ "repo_path": repo, "branch": branch }),
+            )
+        })?;
+    persist_finalize_record_for_mode(&task_state, &task.run_id, &output, mode).map_err(|err| {
+        finalize_failure(
+            Some(&task),
+            "sidecar_write_failed",
+            err.to_string(),
+            true,
+            serde_json::json!({ "sidecar_path": sidecar_path }),
+        )
+    })?;
+    persist_delivery_gate_report_if_absent(&task_state, &task.run_id).map_err(|err| {
+        finalize_failure(
+            Some(&task),
+            "sidecar_write_failed",
+            err.to_string(),
+            true,
+            serde_json::json!({ "sidecar_path": delivery_gate_record_path(&task_state, &task.run_id) }),
+        )
+    })?;
+
+    let status = if matches!(mode, FinalizeMode::DryRun) {
+        "dry_run"
+    } else if output.contains("no changes") {
+        "no_changes"
+    } else {
+        "finalized"
+    };
+    let commit = if matches!(mode, FinalizeMode::LocalCommitOnly) && status == "finalized" {
+        current_commit(&tools, &repo)
+    } else {
+        None
+    };
+    Ok(FinalizeApprovedResponse::success(
+        &task,
+        status,
+        mode,
+        &repo,
+        &branch,
+        commit,
+        &sidecar_path,
+        false,
+        vec![],
+    ))
+}
+
+#[allow(clippy::result_large_err)]
+fn select_approved_task(
+    tasks_path: &Path,
+    task_id: &str,
+) -> Result<ApprovedProcessedTask, FinalizeApprovedFailure> {
+    let text = fs::read_to_string(tasks_path).map_err(|err| {
+        finalize_failure(
+            None,
+            "task_not_found",
+            format!("cannot read tasks JSON: {err}"),
+            true,
+            serde_json::json!({ "tasks_path": tasks_path }),
+        )
+    })?;
+    let value = serde_json::from_str::<Value>(&text).map_err(|err| {
+        finalize_failure(
+            None,
+            "invalid_tasks_json",
+            format!("invalid tasks JSON: {err}"),
+            false,
+            serde_json::json!({ "tasks_path": tasks_path }),
+        )
+    })?;
+    let tasks = value.as_array().ok_or_else(|| {
+        finalize_failure(
+            None,
+            "invalid_tasks_json",
+            "tasks JSON must be an array",
+            false,
+            serde_json::json!({ "tasks_path": tasks_path }),
+        )
+    })?;
+
+    let matches: Vec<&Value> = tasks
+        .iter()
+        .filter(|task| task.get("task_id").and_then(Value::as_str) == Some(task_id))
+        .collect();
+    if matches.is_empty() {
+        return Err(finalize_failure(
+            None,
+            "task_not_found",
+            format!("Task `{task_id}` was not found"),
+            true,
+            serde_json::json!({ "task_id": task_id }),
+        ));
+    }
+    if matches.len() > 1 {
+        return Err(finalize_failure(
+            None,
+            "ambiguous_task_id",
+            format!("Task id `{task_id}` appears more than once"),
+            false,
+            serde_json::json!({ "task_id": task_id, "count": matches.len() }),
+        ));
+    }
+
+    approved_processed_task_from_value(matches[0]).map_err(|(code, message, retryable)| {
+        finalize_failure(
+            None,
+            code,
+            message,
+            retryable,
+            serde_json::json!({ "task_id": task_id }),
+        )
+    })
+}
+
+fn approved_processed_task_from_value(
+    task: &Value,
+) -> Result<ApprovedProcessedTask, (&'static str, String, bool)> {
+    let object = task.as_object().ok_or_else(|| {
+        (
+            "task_not_finalizable",
+            "task entry must be an object".to_string(),
+            false,
+        )
+    })?;
+    let task_id = object
+        .get("task_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            (
+                "task_not_finalizable",
+                "task_id is missing".to_string(),
+                false,
+            )
+        })?;
+    if object
+        .get("meta")
+        .and_then(|meta| meta.get("status"))
+        .and_then(Value::as_str)
+        != Some("Processed")
+    {
+        return Err((
+            "task_not_finalizable",
+            "task status is not Processed".to_string(),
+            true,
+        ));
+    }
+    let Some(payload) = decoded_payload(object.get("payload")) else {
+        return Err((
+            "task_not_finalizable",
+            "task payload is missing or is not JSON".to_string(),
+            true,
+        ));
+    };
+    if payload.get("approval_state").and_then(Value::as_str) != Some("approved") {
+        return Err((
+            "approval_missing",
+            "task payload approval_state is not approved".to_string(),
+            true,
+        ));
+    }
+    if payload
+        .get("finalize_requested_at")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Err((
+            "finalize_not_requested",
+            "task payload has no finalize_requested_at".to_string(),
+            true,
+        ));
+    }
+    let agenda_id = payload
+        .get("agenda_id")
+        .or_else(|| payload.get("canopus_agenda_id"))
+        .or_else(|| payload.get("run_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(task_id)
+        .to_string();
+    let run_id = derive_approved_run_id(&payload, &agenda_id, task_id)
+        .map_err(|err| ("task_not_finalizable", err.to_string(), false))?;
+    let repo_path = payload
+        .get("repo_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+
+    Ok(ApprovedProcessedTask {
+        task_id: task_id.to_string(),
+        agenda_id,
+        run_id,
+        repo_path,
+    })
+}
+
+#[derive(Debug)]
+struct FinalizeApprovedFailure {
+    message: String,
+    response: FinalizeApprovedResponse,
+}
+
+fn finalize_failure(
+    task: Option<&ApprovedProcessedTask>,
+    code: &'static str,
+    message: impl Into<String>,
+    retryable: bool,
+    details: Value,
+) -> FinalizeApprovedFailure {
+    let message = message.into();
+    FinalizeApprovedFailure {
+        message: message.clone(),
+        response: FinalizeApprovedResponse::failure(task, code, message, retryable, details),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct FinalizeApprovedResponse {
+    ok: bool,
+    command: &'static str,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agenda_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidecar_path: Option<String>,
+    idempotent: bool,
+    retryable: bool,
+    warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<FinalizeApprovedError>,
+}
+
+#[derive(Debug, Serialize)]
+struct FinalizeApprovedError {
+    code: &'static str,
+    message: String,
+    retryable: bool,
+    details: Value,
+}
+
+impl FinalizeApprovedResponse {
+    #[allow(clippy::too_many_arguments)]
+    fn success(
+        task: &ApprovedProcessedTask,
+        status: &str,
+        mode: FinalizeMode,
+        repo: &Path,
+        branch: &str,
+        commit: Option<String>,
+        sidecar_path: &Path,
+        idempotent: bool,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            ok: true,
+            command: "finalize-approved",
+            status: status.to_string(),
+            task_id: Some(task.task_id.clone()),
+            agenda_id: Some(task.agenda_id.clone()),
+            run_id: Some(task.run_id.clone()),
+            mode: Some(mode.as_json_str().to_string()),
+            repo_path: Some(repo.display().to_string()),
+            branch: Some(branch.to_string()),
+            commit,
+            sidecar_path: Some(sidecar_path.display().to_string()),
+            idempotent,
+            retryable: false,
+            warnings,
+            error: None,
+        }
+    }
+
+    fn failure(
+        task: Option<&ApprovedProcessedTask>,
+        code: &'static str,
+        message: impl Into<String>,
+        retryable: bool,
+        details: Value,
+    ) -> Self {
+        Self {
+            ok: false,
+            command: "finalize-approved",
+            status: code.to_string(),
+            task_id: task.map(|task| task.task_id.clone()),
+            agenda_id: task.map(|task| task.agenda_id.clone()),
+            run_id: task.map(|task| task.run_id.clone()),
+            mode: None,
+            repo_path: task.and_then(|task| {
+                task.repo_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+            }),
+            branch: task.map(|task| format!("canopus/{}", task.run_id)),
+            commit: None,
+            sidecar_path: None,
+            idempotent: false,
+            retryable,
+            warnings: vec![],
+            error: Some(FinalizeApprovedError {
+                code,
+                message: message.into(),
+                retryable,
+                details,
+            }),
+        }
+    }
+}
+
+fn print_finalize_approved_json(response: &FinalizeApprovedResponse) -> CanopusResult<()> {
+    let text = serde_json::to_string_pretty(response)
+        .map_err(|err| CanopusError::Runtime(format!("serialize JSON: {err}")))?;
+    println!("{text}");
+    Ok(())
+}
+
+fn classify_finalize_error(err: &CanopusError) -> &'static str {
+    let message = err.to_string();
+    if message.contains("aborting auto-commit:") {
+        "branch_preflight_failed"
+    } else if message.contains("commit") {
+        "git_commit_failed"
+    } else {
+        "internal_error"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FinalizeMode {
     DryRun,
     LocalCommitOnly,
     Mutate,
+}
+
+impl FinalizeMode {
+    fn as_json_str(self) -> &'static str {
+        match self {
+            FinalizeMode::DryRun => "dry_run",
+            FinalizeMode::LocalCommitOnly => "local_commit_only",
+            FinalizeMode::Mutate => "mutate",
+        }
+    }
 }
 
 pub(crate) async fn post_approval(
@@ -264,7 +737,8 @@ pub(crate) async fn post_approval(
         return Ok(plan.join("\n"));
     }
 
-    // LocalCommitOnly: pre-flight + branch creation + commit, then return without push/PR.
+    // LocalCommitOnly: pre-flight + commit on the existing submit-created branch,
+    // then return without push/PR.
     // V1.5 limitations (documented in plan): user_request, reviewer summary, and commit_type
     // inference are not yet wired through to this call site, so we use minimum viable values.
     if matches!(mode, FinalizeMode::LocalCommitOnly) {
@@ -274,6 +748,22 @@ pub(crate) async fn post_approval(
             return Err(CanopusError::Runtime(
                 "aborting auto-commit: detached HEAD".to_string(),
             ));
+        }
+        let current_branch = head
+            .stdout
+            .trim()
+            .strip_prefix("refs/heads/")
+            .unwrap_or_else(|| head.stdout.trim())
+            .to_string();
+        if matches!(current_branch.as_str(), "main" | "master" | "develop") {
+            return Err(CanopusError::Runtime(format!(
+                "aborting auto-commit: protected branch {current_branch}"
+            )));
+        }
+        if current_branch != branch {
+            return Err(CanopusError::Runtime(format!(
+                "aborting auto-commit: current branch {current_branch} does not match expected {branch}"
+            )));
         }
         // Pre-flight 2: clean index (post-executor invariant; distinct from submit-time
         // ensure_clean_worktree which validates pre-executor state).
@@ -292,8 +782,7 @@ pub(crate) async fn post_approval(
             ));
         }
 
-        // Capture porcelain BEFORE branching so we can short-circuit on no-op without
-        // leaving an orphan branch behind (plan §T5 idempotency carve-out).
+        // Capture porcelain before commit so no-op finalization is idempotent.
         let porcelain = tools.changed_files(repo)?;
         let changed_paths: Vec<PathBuf> = porcelain
             .stdout
@@ -313,47 +802,7 @@ pub(crate) async fn post_approval(
             return Ok(plan.join("\n"));
         }
 
-        // Branch creation with collision retry (PM-b).
-        // user_request is not yet plumbed to this call site (V1.5 limitation); slug
-        // falls back to "task" via derive_branch_name's empty-input handling.
         let user_request = "";
-        let base_branch = derive_branch_name(user_request, agenda_id);
-        let mut branch_used: Option<String> = None;
-        for n in 1u32..=10 {
-            let candidate = if n == 1 {
-                base_branch.clone()
-            } else {
-                with_collision_suffix(&base_branch, n)
-            };
-            let checkout = tools.run_check(repo, &["git", "checkout", "-b", &candidate])?;
-            if checkout.status == 0 {
-                branch_used = Some(candidate);
-                break;
-            }
-            if checkout.stderr.contains("already exists") {
-                log::warn!(
-                    "[finalize] branch {} exists, retrying with suffix (attempt {})",
-                    candidate,
-                    n
-                );
-                continue;
-            }
-            return Err(CanopusError::Tool(checkout.stderr));
-        }
-        let branch_used = match branch_used {
-            Some(name) => name,
-            None => {
-                log::error!(
-                    "[finalize] branch namespace exhausted for run {}",
-                    agenda_id
-                );
-                return Err(CanopusError::Runtime(format!(
-                    "branch namespace exhausted for run {}",
-                    agenda_id
-                )));
-            }
-        };
-
         // Build commit message via the pure formatter.
         // V1.5 minimum viable inputs: empty reviewer_summary/body, hardcoded "feat" type,
         // legacy summary pattern, empty user_request. Type inference + reviewer artifact
@@ -394,12 +843,16 @@ pub(crate) async fn post_approval(
         }
         log::info!(
             "[finalize] local-commit-only: branch={} run_id={}",
-            branch_used,
+            current_branch,
             agenda_id
         );
+        if commit.status == 0 {
+            let sha = latest_commit(repo)?;
+            plan.push(format!("commit: {sha}"));
+        }
         plan.push(format!(
             "local-commit-only: committed on branch {} (no push, no PR)",
-            branch_used
+            current_branch
         ));
         return Ok(plan.join("\n"));
     }
@@ -458,15 +911,17 @@ fn persist_finalize_record(state: &Path, run_id: &str, output: &str) -> CanopusR
     Ok(())
 }
 
-fn persist_finalize_record_if_absent(
+fn persist_finalize_record_for_mode(
     state: &Path,
     run_id: &str,
     output: &str,
+    mode: FinalizeMode,
 ) -> CanopusResult<()> {
     let path = finalize_record_path(state, run_id);
-    if path.exists() {
+    if should_skip_existing_finalize_record(&path, mode) {
         log::info!(
-            "[watch] finalize record exists after dry-run; preserving {}",
+            "[watch] terminal finalize record exists after {:?}; preserving {}",
+            mode,
             path.display()
         );
         return Ok(());
@@ -476,6 +931,59 @@ fn persist_finalize_record_if_absent(
     }
     fs::write(path, output)?;
     Ok(())
+}
+
+fn should_skip_existing_finalize_record(path: &Path, mode: FinalizeMode) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    if matches!(mode, FinalizeMode::DryRun) {
+        return true;
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("finalize mode: LocalCommitOnly")
+        && (text.contains("commit: ") || text.contains("no changes"))
+}
+
+fn should_skip_existing_finalize_record_for_branch(
+    path: &Path,
+    mode: FinalizeMode,
+    branch: &str,
+) -> bool {
+    if !should_skip_existing_finalize_record(path, mode) {
+        return false;
+    }
+    if matches!(mode, FinalizeMode::DryRun) {
+        return true;
+    }
+    fs::read_to_string(path)
+        .map(|text| text.contains(&format!("branch: {branch}")))
+        .unwrap_or(false)
+}
+
+fn read_commit_from_record(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("commit: "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn current_commit(tools: &LocalToolGateway, repo: &Path) -> Option<String> {
+    let output = tools.run_check(repo, &["git", "rev-parse", "HEAD"]).ok()?;
+    (output.status == 0).then(|| output.stdout.trim().to_string())
+}
+
+fn latest_commit(repo: &Path) -> CanopusResult<String> {
+    let tools = LocalToolGateway;
+    let output = tools.run_check(repo, &["git", "rev-parse", "HEAD"])?;
+    if output.status != 0 {
+        return Err(CanopusError::Tool(output.stderr));
+    }
+    Ok(output.stdout.trim().to_string())
 }
 
 fn finalize_record_path(state: &Path, run_id: &str) -> PathBuf {
@@ -530,13 +1038,21 @@ pub(crate) fn notify_discord(message: &str) {
 }
 
 fn notify_discord_token_usage(state: &std::path::Path, run_id: &str) {
-    let path = state.join("runs").join(format!("{run_id}-token-usage.json"));
-    let Ok(text) = std::fs::read_to_string(&path) else { return };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let path = state
+        .join("runs")
+        .join(format!("{run_id}-token-usage.json"));
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
     let input = v["input_tokens"].as_u64().unwrap_or(0);
     let output = v["output_tokens"].as_u64().unwrap_or(0);
     let total = v["total_tokens"].as_u64().unwrap_or(input + output);
-    if total == 0 { return }
+    if total == 0 {
+        return;
+    }
     let msg = format!(
         "🪙 **{total}** tokens (input: {:.1}k / output: {:.1}k)",
         input as f64 / 1000.0,
@@ -959,12 +1475,14 @@ mod gate_tests {
             vec![
                 ApprovedProcessedTask {
                     task_id: "discord-string".to_string(),
-                    run_id: "agenda-discord-string".to_string(),
+                    agenda_id: "agenda-discord-string".to_string(),
+                    run_id: "agenda-discord-string-discord-string".to_string(),
                     repo_path: None
                 },
                 ApprovedProcessedTask {
                     task_id: "discord-object".to_string(),
-                    run_id: "agenda-discord-object".to_string(),
+                    agenda_id: "agenda-discord-object".to_string(),
+                    run_id: "agenda-discord-object-discord-object".to_string(),
                     repo_path: None
                 },
             ]
@@ -1003,7 +1521,8 @@ mod gate_tests {
             tasks,
             vec![ApprovedProcessedTask {
                 task_id: "discord-object".to_string(),
-                run_id: "agenda-discord-object".to_string(),
+                agenda_id: "agenda-discord-object".to_string(),
+                run_id: "agenda-discord-object-discord-object".to_string(),
                 repo_path: Some(PathBuf::from("/tmp/payload-repo"))
             }]
         );
@@ -1054,12 +1573,15 @@ mod gate_tests {
         // PR-A A4: sidecar must land under <payload_repo>/.canopus, not the
         // watch-side --state argument (plan §5.3 / §6.5).
         let payload_state = payload_repo.join(".canopus");
-        let record =
-            fs::read_to_string(finalize_record_path(&payload_state, "agenda-payload")).unwrap();
+        let record = fs::read_to_string(finalize_record_path(
+            &payload_state,
+            "agenda-payload-discord-payload",
+        ))
+        .unwrap();
         assert!(record.contains("payload.txt"));
         assert!(!record.contains("fallback.txt"));
         assert!(
-            !finalize_record_path(&state, "agenda-payload").exists(),
+            !finalize_record_path(&state, "agenda-payload-discord-payload").exists(),
             "finalize record must NOT land under fallback --state when payload.repo_path is present"
         );
         let _ = fs::remove_dir_all(&payload_state);

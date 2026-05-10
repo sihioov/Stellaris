@@ -14,7 +14,8 @@ Commands:
   !register <path>            - Register current category's repo path
   !ask <question>             - Ask a direct question without creating a task
   !run <request>              - Add task (agent type from channel name)
-  !approve [task_id]          - Approve PendingReview task
+  !approve [task_id]          - Approve PendingReview task and request finalization
+  !finalize <task_id>         - Retry Canopus finalization for an approved Processed task
   !reject  [task_id]          - Reject  PendingReview task
   !propose-approve [task_id]  - Promote PendingProposal task to Pending
   !propose-reject  [task_id]  - Reject PendingProposal task as Failed
@@ -40,6 +41,7 @@ from canopus_client import (
     CANOPUS_COMMAND,
     CANOPUS_STATE_PATH,
     create_worktree,
+    finalize_approved_task,
     intake_github_work,
     mark_proposal_intake_failed,
     promote_pending_proposal_with_intake,
@@ -117,6 +119,80 @@ def get_category_context(ctx):
     project = get_project(category_id)
     tasks_path = get_tasks_path(category_id)
     return category_id, project, tasks_path
+
+
+def is_approved_processed_task(task: dict | None) -> bool:
+    if not task:
+        return False
+    meta = task.get("meta", {})
+    payload = _payload_data(task)
+    return meta.get("status") == "Processed" and (
+        meta.get("approval_state") == "approved" or payload.get("approval_state") == "approved"
+    )
+
+
+def approve_error_with_finalize_hint(tasks_path: str, task_id: str | None, error: str) -> str:
+    if not task_id:
+        return error
+    target = next((t for t in read_tasks(tasks_path) if t.get("task_id") == task_id), None)
+    if is_approved_processed_task(target):
+        return f"{error}\n이미 승인된 태스크입니다. 최종화를 다시 시도하려면 `!finalize {task_id}` 를 사용하세요."
+    return error
+
+
+def canopus_error_message(result: dict | None, error: str | None) -> str:
+    if isinstance(result, dict):
+        err = result.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err.get("code") or error or "unknown error")
+        if err:
+            return str(err)
+    return str(error or "unknown error")
+
+
+def finalize_retry_command(task_id: str | None) -> str:
+    return f"`!finalize {task_id}`" if task_id else "`!finalize <task_id>`"
+
+
+def format_finalize_outcome(result: dict | None, error: str | None, task_id: str | None = None) -> str:
+    retry_command = finalize_retry_command(task_id)
+    if result is None:
+        if error and "CANOPUS_COMMAND is not configured" in error:
+            return (
+                "**Finalize**: not attempted (CANOPUS_COMMAND is not configured)\n"
+                f"`CANOPUS_COMMAND` 설정 후 {retry_command} 로 다시 시도하세요."
+            )
+        return (
+            f"**Finalize**: failed — {truncate_text(error or 'unknown error', 500)}\n"
+            f"Retry: {retry_command}"
+        )
+
+    if result.get("ok") is False:
+        retry_hint = f"Retry: {retry_command}" if result.get("retryable") is not False else f"Retry may require operator action before {retry_command}."
+        return (
+            f"**Finalize**: failed — {truncate_text(canopus_error_message(result, error), 500)}\n"
+            f"{retry_hint}"
+        )
+
+    status = result.get("status") or "completed"
+    if status == "dry_run":
+        summary = "dry-run/gate-disabled; no local commit"
+    elif status == "already_finalized":
+        summary = "already finalized"
+    elif status == "no_changes":
+        summary = "no changes"
+    elif status == "finalized":
+        summary = "finalized"
+    else:
+        summary = str(status)
+
+    details = []
+    if result.get("branch"):
+        details.append(f"branch `{result['branch']}`")
+    if result.get("commit"):
+        details.append(f"commit `{result['commit']}`")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"**Finalize**: {summary}{suffix}"
 
 
 # ── events ───────────────────────────────────────────────────────────────────
@@ -524,7 +600,7 @@ async def cmd_run(ctx, *, request: str = None):
 
 @bot.command(name="approve")
 async def cmd_approve(ctx, task_id: str = None):
-    """Approve a PendingReview task → Processed."""
+    """Approve a PendingReview task → Processed, then ask Canopus to finalize it."""
     if not is_authorized(ctx):
         await ctx.send("🚫 권한이 없습니다.")
         return
@@ -549,16 +625,57 @@ async def cmd_approve(ctx, task_id: str = None):
         ),
     )
     if error:
-        await ctx.send(error)
+        await ctx.send(approve_error_with_finalize_hint(tasks_path, task_id, error))
         return
 
     payload = _payload_data(target)
+    finalize_result, finalize_error = await finalize_approved_task(tasks_path, target["task_id"])
     await ctx.send(
         f"✅ 태스크 승인됨\n"
         f"**ID**: `{target['task_id']}`\n"
         f"**Agenda**: `{payload.get('agenda_id', '?')}`\n"
         f"**Status**: Processed\n"
-        f"**Finalize**: requested"
+        f"{format_finalize_outcome(finalize_result, finalize_error, target['task_id'])}"
+    )
+
+
+@bot.command(name="finalize")
+async def cmd_finalize(ctx, task_id: str = None):
+    """Retry Canopus finalization for an already-approved Processed task."""
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+
+    if not task_id:
+        await ctx.send("사용법: `!finalize <task_id>`")
+        return
+
+    category_id, project, tasks_path = get_category_context(ctx)
+    if project is None:
+        await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
+        return
+
+    target, error = find_single_task_locked(
+        tasks_path,
+        task_id,
+        "finalize",
+        {"Processed"},
+        "승인 완료(Processed)",
+    )
+    if error:
+        await ctx.send(error)
+        return
+    if not is_approved_processed_task(target):
+        await ctx.send(f"⚠️ Task `{task_id}` 는 승인된 Processed 태스크가 아닙니다.")
+        return
+
+    result, finalize_error = await finalize_approved_task(tasks_path, target["task_id"])
+    payload = _payload_data(target)
+    await ctx.send(
+        f"🔁 최종화 재시도\n"
+        f"**ID**: `{target['task_id']}`\n"
+        f"**Agenda**: `{payload.get('agenda_id', '?')}`\n"
+        f"{format_finalize_outcome(result, finalize_error, target['task_id'])}"
     )
 
 
@@ -865,7 +982,8 @@ async def cmd_help(ctx):
         "ㄴ `ASK_COMMAND` 환경변수로 답변 백엔드 설정 필요\n\n"
 
         "**✅ 작업 승인/거절**\n"
-        "`!approve [task_id]` — 작업 승인 → Processed\n"
+        "`!approve [task_id]` — 작업 승인 → Processed 후 Canopus 최종화 요청\n"
+        "`!finalize <task_id>` — 승인된 작업 최종화 재시도\n"
         "`!reject [task_id]` — 작업 거절 → Failed\n"
         "`!propose-approve [task_id]` — 후보 승인 → Pending\n"
         "`!propose-reject [task_id]` — 후보 거절 → Failed\n"

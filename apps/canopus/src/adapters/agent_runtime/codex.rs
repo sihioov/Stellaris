@@ -174,14 +174,20 @@ fn extract_token_usage(stdout: &str) -> Option<TokenUsage> {
                     v["usage"]["input_tokens"].as_u64(),
                     v["usage"]["output_tokens"].as_u64(),
                 ) {
-                    return Some(TokenUsage { input_tokens: input, output_tokens: output });
+                    return Some(TokenUsage {
+                        input_tokens: input,
+                        output_tokens: output,
+                    });
                 }
                 // Chat Completions: {"usage": {"prompt_tokens": N, "completion_tokens": N}}
                 if let (Some(prompt), Some(completion)) = (
                     v["usage"]["prompt_tokens"].as_u64(),
                     v["usage"]["completion_tokens"].as_u64(),
                 ) {
-                    return Some(TokenUsage { input_tokens: prompt, output_tokens: completion });
+                    return Some(TokenUsage {
+                        input_tokens: prompt,
+                        output_tokens: completion,
+                    });
                 }
                 // Nested: search one level deeper for a usage object with total_tokens
                 if let Some(total) = v["usage"]["total_tokens"].as_u64() {
@@ -189,7 +195,10 @@ fn extract_token_usage(stdout: &str) -> Option<TokenUsage> {
                         .as_u64()
                         .or_else(|| v["usage"]["prompt_tokens"].as_u64())
                         .unwrap_or(0);
-                    return Some(TokenUsage { input_tokens: input, output_tokens: total.saturating_sub(input) });
+                    return Some(TokenUsage {
+                        input_tokens: input,
+                        output_tokens: total.saturating_sub(input),
+                    });
                 }
             }
         }

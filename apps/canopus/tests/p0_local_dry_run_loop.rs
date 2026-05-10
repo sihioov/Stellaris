@@ -53,6 +53,7 @@ async fn watch_and_explicit_finalize_share_idempotent_dry_run_record() {
         task_type: TaskType::Custom("canopus.agent".to_string()),
         payload: serde_json::json!({
             "agenda_id":"agenda-p0-1",
+            "run_id":"agenda-p0-1",
             "role":"reviewer",
             "approval_state":"approved",
             "finalize_requested_at":"2026-05-05T00:00:00Z"
