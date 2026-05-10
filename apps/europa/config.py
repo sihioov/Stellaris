@@ -53,6 +53,8 @@ CHANNEL_TYPE_MAP = {
     "development": "canopus.agent",
     "review": "canopus.reviewer",
     "general": None,
+    "analysis": None,
+    "brainstorming": None,
 }
 
 ICON_MAP = {

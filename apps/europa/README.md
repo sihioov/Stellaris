@@ -10,6 +10,8 @@ policy logic here; route mutation to canopus. See
 |---------|-------------|
 | `!new-project <name> [path]` | Create a project directory, run `git init`, create Discord category/channels, and register it. When `path` is omitted, uses `NEW_PROJECT_DEFAULT_ROOT/<name>` (`/home/sihioov/project/<name>` by default). |
 | `!ask <question>` | Ask a direct question without creating a pipeline task |
+| `!analyze <topic>` | In `#analysis`, ask an analyst-style project-local question without creating a task |
+| `!brainstorm <topic>` | In `#brainstorming`, ask for project-local brainstorming without creating a task |
 | `!run <request>` | Add a new Pending task; GitHub-backed projects call Canopus `work-intake` before appending |
 | `!approve [task_id]` | Mark a PendingReview task as Processed, then invoke bounded Canopus finalization |
 | `!finalize <task_id>` | Retry Canopus finalization for an already-approved Processed task |
@@ -50,9 +52,9 @@ python europa.py
 | `NEW_PROJECT_DEFAULT_ROOT` | `/home/sihioov/project` | Parent directory used by `!new-project <name>` when the path argument is omitted |
 | `ALLOWED_USER_IDS` | *(empty)* | Comma-separated Discord user IDs permitted to use commands; empty = all users allowed in dev mode |
 | `CANOPUS_STATE_PATH` | `<repo>/.canopus` | Optional state root used by `!show` when listing artifacts |
-| `ASK_COMMAND` | *(empty)* | Optional direct-answer backend for `!ask`; receives the question on stdin and in `STELLARIS_ASK_PROMPT` |
+| `ASK_COMMAND` | *(empty)* | Optional direct-answer backend for `!ask`, `!analyze`, and `!brainstorm`; receives the prompt on stdin and in `STELLARIS_ASK_PROMPT` |
 | `ASK_TIMEOUT_SECONDS` | `30` | Timeout for `!ask` backend execution |
-| `ASK_MAX_OUTPUT_CHARS` | `1800` | Maximum response characters sent back to Discord |
+| `ASK_MAX_OUTPUT_CHARS` | `1800` | Maximum response characters sent back to Discord; current code caps this setting at 1800 |
 | `GITHUB_OWNER` / `GITHUB_REPO` | *(empty)* | Repository slug used to populate agenda links and Issue creation URLs in task payloads |
 | `GITHUB_PROJECT_ID` | *(empty)* | Optional GitHub Project v2 GraphQL node ID copied into task payloads; this is not a URL |
 | `GITHUB_PROJECT_URL` | *(empty)* | Optional canonical `https://github.com/users/<owner>/projects/<number>` or `https://github.com/orgs/<owner>/projects/<number>` URL |
@@ -71,6 +73,28 @@ Example local echo backend for development:
 ```bash
 ASK_COMMAND="python3 -c 'import sys; print(\"Answer:\", sys.stdin.read())'" python3 europa.py
 ```
+
+## Project conversation channels
+
+New projects create six text channels: `general`, `planning`, `development`,
+`review`, `analysis`, and `brainstorming`.
+
+- `!analyze <topic>` works only in `#analysis`.
+- `!brainstorm <topic>` works only in `#brainstorming`.
+- Both commands require the Discord category to be registered to a project.
+- Both commands are conversation-only: Europa does not append tasks, create
+  agendas, call GitHub intake, or invoke Canopus mutation paths for them.
+- `!ask <question>` remains universal and does not require a registered project
+  or a specific channel.
+
+The new commands reuse the configured `ASK_COMMAND` with an analyst-style or
+brainstormer-style directive. This is directive reuse in Europa, not execution
+of the real Canopus analyst stage. For project-local grounding, Europa runs the
+backend with `cwd` set to the registered `repo_path`, passes project metadata in
+`STELLARIS_PROJECT_NAME`, `STELLARIS_PROJECT_REPO_PATH`,
+`STELLARIS_DISCORD_CHANNEL`, and `STELLARIS_CONVERSATION_ROLE`, and includes the
+same project context in the prompt header. The configured backend is still
+operator-owned; Europa only avoids its own task/GitHub/Canopus mutation paths.
 
 ## Shared GitHub-integrated v1 path
 

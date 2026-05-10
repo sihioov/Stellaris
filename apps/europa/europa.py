@@ -8,11 +8,15 @@ Project structure:
     #planning    - Planner agent only
     #development - Full pipeline (Planner+Coder+Reviewer)
     #review      - Reviewer agent only
+    #analysis    - Analyst-style direct answers via ASK_COMMAND
+    #brainstorming - Brainstormer-style direct answers via ASK_COMMAND
 
 Commands:
-  !new-project <name> [path]  - Create category + 4 channels + register
+  !new-project <name> [path]  - Create category + 6 channels + register
   !register <path>            - Register current category's repo path
   !ask <question>             - Ask a direct question without creating a task
+  !analyze <topic>            - Ask an analyst-style project-local question
+  !brainstorm <topic>         - Ask for project-local brainstorming
   !run <request>              - Add task (agent type from channel name)
   !approve [task_id]          - Approve PendingReview task and request finalization
   !finalize <task_id>         - Retry Canopus finalization for an approved Processed task
@@ -109,6 +113,26 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+PROJECT_CHANNELS = (
+    "general",
+    "planning",
+    "development",
+    "review",
+    "analysis",
+    "brainstorming",
+)
+
+ANALYST_STYLE_INSTRUCTION = (
+    "Act as the Canopus analyst. Analyze the current request and repository context. "
+    "Do not edit files."
+)
+
+BRAINSTORMER_STYLE_INSTRUCTION = (
+    "Act as the Canopus brainstormer. Suggest 3–5 ideas, options, or perspectives "
+    "for the following. Do not commit to any single answer; explore variety. "
+    "Do not edit files."
+)
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -120,6 +144,93 @@ def get_category_context(ctx):
     project = get_project(category_id)
     tasks_path = get_tasks_path(category_id)
     return category_id, project, tasks_path
+
+
+def normalized_channel_name(ctx) -> str:
+    return getattr(ctx.channel, "name", "").lower().strip()
+
+
+def build_conversation_prompt(
+    project: dict,
+    channel_name: str,
+    role_surface: str,
+    role_instruction: str,
+    topic: str,
+) -> str:
+    return (
+        "Project context:\n"
+        f"- project: {project.get('name', '?')}\n"
+        f"- repo_path: {project.get('repo_path', '?')}\n"
+        f"- channel: #{channel_name}\n"
+        f"- role_surface: {role_surface}\n\n"
+        "Role instruction:\n"
+        f"{role_instruction}\n\n"
+        "User request:\n"
+        f"{topic}"
+    )
+
+
+async def run_project_conversation_command(
+    ctx,
+    *,
+    topic: str | None,
+    required_channel: str,
+    role_surface: str,
+    role_instruction: str,
+    response_label: str,
+    command_label: str,
+    conversation_role: str,
+):
+    if not is_authorized(ctx):
+        await ctx.send("🚫 권한이 없습니다.")
+        return
+    if not topic:
+        await ctx.send(f"사용법: `{command_label} <주제>`")
+        return
+
+    channel_name = normalized_channel_name(ctx)
+    if channel_name != required_channel:
+        await ctx.send(f"⚠️ 이 명령은 `#{required_channel}` 채널에서만 사용할 수 있습니다.")
+        return
+
+    category_id, project, _tasks_path = get_category_context(ctx)
+    if category_id is None:
+        await ctx.send("⚠️ 카테고리가 있는 채널에서만 사용할 수 있습니다.")
+        return
+    if project is None:
+        await ctx.send(
+            "⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.\n"
+            "`!register <로컬경로>` 또는 `!new-project <이름> [경로]` 를 먼저 실행해주세요."
+        )
+        return
+
+    prompt = build_conversation_prompt(
+        project,
+        channel_name,
+        role_surface,
+        role_instruction,
+        topic,
+    )
+    extra_env = {
+        "STELLARIS_PROJECT_NAME": str(project.get("name", "")),
+        "STELLARIS_PROJECT_REPO_PATH": str(project.get("repo_path", "")),
+        "STELLARIS_DISCORD_CHANNEL": f"#{channel_name}",
+        "STELLARIS_CONVERSATION_ROLE": conversation_role,
+    }
+
+    async with ctx.typing():
+        answer, error = await run_ask_backend(
+            prompt,
+            cwd=project.get("repo_path"),
+            extra_env=extra_env,
+            command_label=command_label,
+        )
+
+    if error:
+        await ctx.send(error)
+        return
+
+    await ctx.send(f"💬 **{response_label}**\n{answer}")
 
 
 def is_approved_processed_task(task: dict | None) -> bool:
@@ -405,7 +516,7 @@ async def handle_worktree_switch(ctx, category_id: int, project: dict, name: str
 
 @bot.command(name="new-project")
 async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
-    """Create directory, git init, Discord category + 4 channels, register in projects.json."""
+    """Create directory, git init, Discord category + 6 channels, register in projects.json."""
     if not is_authorized(ctx):
         await ctx.send("🚫 권한이 없습니다.")
         return
@@ -472,9 +583,9 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
 
         # 3. Discord 카테고리 + 채널 생성
         category = await ctx.guild.create_category(name)
-        for ch_name in ("general", "planning", "development", "review"):
+        for ch_name in PROJECT_CHANNELS:
             await category.create_text_channel(ch_name)
-        steps.append(f"💬 Discord 카테고리 + 4채널 생성")
+        steps.append("💬 Discord 카테고리 + 6채널 생성")
 
         # 4. GitHub-backed registration (when requested) and projects.json registration.
         registration, reg_error = await register_github_project(repo_path, github_opts)
@@ -503,7 +614,8 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
         await ctx.send(
             f"✅ **프로젝트 생성 완료**: {name}\n\n"
             f"{step_list}\n\n"
-            f"이제 #development 채널에서 `!run <요청>` 으로 작업을 시작하세요."
+            f"`#analysis`/`#brainstorming`에서는 대화형 질문을, "
+            f"`#development`에서는 `!run <요청>` 으로 작업을 시작하세요."
         )
     except discord.Forbidden:
         await ctx.send("❌ 채널 생성 권한(Manage Channels)이 없습니다. 봇 권한을 확인해주세요.")
@@ -579,6 +691,36 @@ async def cmd_ask(ctx, *, question: str = None):
     await ctx.send(f"💬 **Ask**\n{answer}")
 
 
+@bot.command(name="analyze")
+async def cmd_analyze(ctx, *, topic: str = None):
+    """Ask an analyst-style project-local question without creating a task."""
+    await run_project_conversation_command(
+        ctx,
+        topic=topic,
+        required_channel="analysis",
+        role_surface="analyst-style",
+        role_instruction=ANALYST_STYLE_INSTRUCTION,
+        response_label="Analyze",
+        command_label="!analyze",
+        conversation_role="analysis",
+    )
+
+
+@bot.command(name="brainstorm")
+async def cmd_brainstorm(ctx, *, topic: str = None):
+    """Ask for project-local brainstorming without creating a task."""
+    await run_project_conversation_command(
+        ctx,
+        topic=topic,
+        required_channel="brainstorming",
+        role_surface="brainstormer-style",
+        role_instruction=BRAINSTORMER_STYLE_INSTRUCTION,
+        response_label="Brainstorm",
+        command_label="!brainstorm",
+        conversation_role="brainstorming",
+    )
+
+
 @bot.command(name="run")
 async def cmd_run(ctx, *, request: str = None):
     """Add a new task. Agent type is determined by channel name."""
@@ -603,6 +745,13 @@ async def cmd_run(ctx, *, request: str = None):
 
     channel_type = get_channel_type(ctx.channel.name)
     if channel_type is None:
+        channel_name = normalized_channel_name(ctx)
+        if channel_name == "analysis":
+            await ctx.send("⚠️ 이 채널에서는 `!analyze <주제>` 명령을 사용하세요. `!run`은 `#planning`, `#development`, `#review` 채널에서만 작동합니다.")
+            return
+        if channel_name == "brainstorming":
+            await ctx.send("⚠️ 이 채널에서는 `!brainstorm <주제>` 명령을 사용하세요. `!run`은 `#planning`, `#development`, `#review` 채널에서만 작동합니다.")
+            return
         await ctx.send("⚠️ `#planning`, `#development`, `#review` 채널에서만 작업을 실행할 수 있습니다.")
         return
 
@@ -1015,7 +1164,7 @@ async def cmd_help(ctx):
 
         "**🗂️ 프로젝트 관리**\n"
         "`!new-project <이름> [경로]` — 신규 프로젝트 생성\n"
-        f"ㄴ 경로 생략 시 `{NEW_PROJECT_DEFAULT_ROOT}/<이름>` 사용; 디렉토리 생성 + git init + Discord 카테고리/채널 4개 자동 생성\n"
+        f"ㄴ 경로 생략 시 `{NEW_PROJECT_DEFAULT_ROOT}/<이름>` 사용; 디렉토리 생성 + git init + Discord 카테고리/채널 6개 자동 생성\n"
         "`!register <경로>` — 현재 카테고리에 기존 Git 레포 등록\n"
         "`!worktree` / `!worktree list` — active worktree 상태/목록 확인\n"
         "`!worktree create <name>` — Canopus를 통해 새 worktree 생성\n"
@@ -1030,6 +1179,11 @@ async def cmd_help(ctx):
         "**💬 즉답 질문**\n"
         "`!ask <질문>` — task를 만들지 않고 바로 질문\n"
         "ㄴ `ASK_COMMAND` 환경변수로 답변 백엔드 설정 필요\n\n"
+
+        "**🔎 프로젝트 대화 채널** *(등록된 프로젝트 카테고리에서 사용)*\n"
+        "`!analyze <주제>` — `#analysis`에서 analyst-style 답변\n"
+        "`!brainstorm <주제>` — `#brainstorming`에서 brainstormer-style 아이디어 탐색\n"
+        "ㄴ task/agenda 없이 프로젝트 repo를 cwd/env/prompt로 `ASK_COMMAND`에 전달\n\n"
 
         "**✅ 작업 승인/거절**\n"
         "`!approve [task_id]` — 작업 승인 → Processed 후 Canopus 최종화 요청\n"

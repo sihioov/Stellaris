@@ -126,11 +126,17 @@ def promote_pending_proposal_with_intake(task: dict, intake: dict | None) -> Non
     task.setdefault("meta", {})["proposal_intake_state"] = payload.get("proposal_intake_state", "not_required")
 
 
-async def run_ask_backend(question: str) -> tuple[str | None, str | None]:
+async def run_ask_backend(
+    question: str,
+    *,
+    cwd: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    command_label: str = "!ask",
+) -> tuple[str | None, str | None]:
     """Run the configured direct-answer backend without touching the task queue."""
     if not ASK_COMMAND:
         return None, (
-            "⚠️ `!ask` 답변 백엔드가 설정되지 않았습니다.\n"
+            f"⚠️ `{command_label}` 답변 백엔드가 설정되지 않았습니다.\n"
             "`ASK_COMMAND` 환경변수에 질문을 stdin으로 받는 명령을 설정해주세요."
         )
 
@@ -143,6 +149,8 @@ async def run_ask_backend(question: str) -> tuple[str | None, str | None]:
 
     env = os.environ.copy()
     env["STELLARIS_ASK_PROMPT"] = question
+    if extra_env:
+        env.update(extra_env)
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -150,6 +158,7 @@ async def run_ask_backend(question: str) -> tuple[str | None, str | None]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=cwd,
         )
     except FileNotFoundError:
         return None, f"⚠️ `ASK_COMMAND` 실행 파일을 찾을 수 없습니다: `{argv[0]}`"
@@ -164,7 +173,7 @@ async def run_ask_backend(question: str) -> tuple[str | None, str | None]:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
-        return None, f"⏱️ `!ask` 시간이 초과되었습니다 ({ASK_TIMEOUT_SECONDS}s)."
+        return None, f"⏱️ `{command_label}` 시간이 초과되었습니다 ({ASK_TIMEOUT_SECONDS}s)."
 
     out = stdout.decode("utf-8", errors="replace").strip()
     err = stderr.decode("utf-8", errors="replace").strip()

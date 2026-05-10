@@ -98,6 +98,17 @@ class FakeCtx:
     async def send(self, message):
         self.sent.append(message)
 
+    def typing(self):
+        return AsyncNoopTyping()
+
+
+class AsyncNoopTyping:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
 
 def configure_project(bot, tmp, task):
     tasks_path = Path(tmp) / "tasks.json"
@@ -113,6 +124,17 @@ class DiscordBotConfigTests(unittest.TestCase):
     def test_tasks_json_path_overrides_per_category_file(self):
         bot = load_bot(TASKS_JSON_PATH="/tmp/stellaris-tasks.json")
         self.assertEqual(bot.get_tasks_path(123), "/tmp/stellaris-tasks.json")
+
+    def test_channel_type_map_includes_conversation_channels(self):
+        bot = load_bot()
+
+        self.assertIsNone(bot.CHANNEL_TYPE_MAP["analysis"])
+        self.assertIsNone(bot.CHANNEL_TYPE_MAP["brainstorming"])
+        self.assertIsNone(bot.get_channel_type("analysis"))
+        self.assertIsNone(bot.get_channel_type("brainstorming"))
+        self.assertEqual(bot.get_channel_type("planning"), "canopus.planner")
+        self.assertEqual(bot.get_channel_type("development"), "canopus.agent")
+        self.assertEqual(bot.get_channel_type("review"), "canopus.reviewer")
 
     def test_git_repo_path_accepts_linked_worktree_git_file(self):
         bot = load_bot()
@@ -455,9 +477,10 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stored["repo_path"], str(expected_repo))
             self.assertEqual(
                 ctx.guild.created_categories[0].channels,
-                ["general", "planning", "development", "review"],
+                ["general", "planning", "development", "review", "analysis", "brainstorming"],
             )
             self.assertIn("프로젝트 생성 완료", ctx.sent[0])
+            self.assertIn("6채널", ctx.sent[0])
 
     async def test_finalize_approved_task_uses_bounded_json_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -486,6 +509,87 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     "--json",
                 ],
             )
+
+    async def test_run_ask_backend_accepts_contextual_cwd_env_and_command_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            result_path = Path(tmp) / "ask-result.json"
+            script = Path(tmp) / "fake_ask.py"
+            script.write_text(
+                "import json, os, pathlib, sys\n"
+                "payload = {\n"
+                "  'stdin': sys.stdin.read(),\n"
+                "  'cwd': os.getcwd(),\n"
+                "  'prompt': os.environ.get('STELLARIS_ASK_PROMPT'),\n"
+                "  'project': os.environ.get('STELLARIS_PROJECT_NAME'),\n"
+                "  'repo': os.environ.get('STELLARIS_PROJECT_REPO_PATH'),\n"
+                "  'channel': os.environ.get('STELLARIS_DISCORD_CHANNEL'),\n"
+                "  'role': os.environ.get('STELLARIS_CONVERSATION_ROLE'),\n"
+                "}\n"
+                f"pathlib.Path({str(result_path)!r}).write_text(json.dumps(payload), encoding='utf-8')\n"
+                "print('ok')\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(ASK_COMMAND=f"{sys.executable} {script}")
+
+            answer, error = await bot.run_ask_backend(
+                "contextual prompt",
+                cwd=str(repo),
+                extra_env={
+                    "STELLARIS_PROJECT_NAME": "Demo",
+                    "STELLARIS_PROJECT_REPO_PATH": str(repo),
+                    "STELLARIS_DISCORD_CHANNEL": "#analysis",
+                    "STELLARIS_CONVERSATION_ROLE": "analysis",
+                },
+                command_label="!analyze",
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(answer, "ok")
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["stdin"], "contextual prompt")
+            self.assertEqual(payload["cwd"], str(repo))
+            self.assertEqual(payload["prompt"], "contextual prompt")
+            self.assertEqual(payload["project"], "Demo")
+            self.assertEqual(payload["repo"], str(repo))
+            self.assertEqual(payload["channel"], "#analysis")
+            self.assertEqual(payload["role"], "analysis")
+
+    async def test_run_ask_backend_uses_command_label_in_configuration_errors(self):
+        bot = load_bot(ASK_COMMAND="")
+
+        _answer, error = await bot.run_ask_backend("prompt", command_label="!analyze")
+
+        self.assertIn("`!analyze`", error)
+
+    async def test_run_ask_backend_preserves_plain_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "plain-ask.json"
+            script = Path(tmp) / "fake_ask.py"
+            script.write_text(
+                "import json, os, pathlib, sys\n"
+                "payload = {\n"
+                "  'stdin': sys.stdin.read(),\n"
+                "  'prompt': os.environ.get('STELLARIS_ASK_PROMPT'),\n"
+                "  'project': os.environ.get('STELLARIS_PROJECT_NAME'),\n"
+                "  'role': os.environ.get('STELLARIS_CONVERSATION_ROLE'),\n"
+                "}\n"
+                f"pathlib.Path({str(result_path)!r}).write_text(json.dumps(payload), encoding='utf-8')\n"
+                "print('plain ok')\n",
+                encoding="utf-8",
+            )
+            bot = load_bot(ASK_COMMAND=f"{sys.executable} {script}")
+
+            answer, error = await bot.run_ask_backend("plain question")
+
+            self.assertIsNone(error)
+            self.assertEqual(answer, "plain ok")
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["stdin"], "plain question")
+            self.assertEqual(payload["prompt"], "plain question")
+            self.assertIsNone(payload["project"])
+            self.assertIsNone(payload["role"])
 
     async def test_run_canopus_json_preserves_partial_failure_stdout_object(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -521,6 +625,259 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["ok"], False)
             self.assertEqual(result["error"]["code"], "git_commit_failed")
             self.assertIn("commit failed", str(error))
+
+    async def test_analyze_wrong_channel_does_not_call_backend_or_mutation_paths(self):
+        bot = load_bot()
+        calls = []
+
+        async def fake_backend(*args, **kwargs):
+            calls.append(("backend", args, kwargs))
+            return "should not happen", None
+
+        async def fake_intake(*args, **kwargs):
+            calls.append(("intake", args, kwargs))
+            return None, None
+
+        def fake_append(*args, **kwargs):
+            calls.append(("append", args, kwargs))
+
+        bot.run_ask_backend = fake_backend
+        bot.intake_github_work = fake_intake
+        bot.append_task_locked = fake_append
+        ctx = FakeCtx()
+        ctx.channel.name = "brainstorming"
+
+        await bot.cmd_analyze(ctx, topic="inspect")
+
+        self.assertTrue(any("#analysis" in msg for msg in ctx.sent))
+        self.assertEqual(calls, [])
+
+    async def test_brainstorm_wrong_channel_does_not_call_backend_or_mutation_paths(self):
+        bot = load_bot()
+        calls = []
+
+        async def fake_backend(*args, **kwargs):
+            calls.append(("backend", args, kwargs))
+            return "should not happen", None
+
+        async def fake_intake(*args, **kwargs):
+            calls.append(("intake", args, kwargs))
+            return None, None
+
+        def fake_append(*args, **kwargs):
+            calls.append(("append", args, kwargs))
+
+        bot.run_ask_backend = fake_backend
+        bot.intake_github_work = fake_intake
+        bot.append_task_locked = fake_append
+        ctx = FakeCtx()
+        ctx.channel.name = "analysis"
+
+        await bot.cmd_brainstorm(ctx, topic="ideas")
+
+        self.assertTrue(any("#brainstorming" in msg for msg in ctx.sent))
+        self.assertEqual(calls, [])
+
+    async def test_analyze_requires_registered_project(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            bot._projects_store.PROJECTS_JSON_PATH = str(Path(tmp) / "projects.json")
+            bot._projects_store.TASKS_JSON_PATH = str(Path(tmp) / "tasks.json")
+            bot.write_projects({"projects": {}})
+            calls = []
+
+            async def fake_backend(*args, **kwargs):
+                calls.append(("backend", args, kwargs))
+                return "should not happen", None
+
+            bot.run_ask_backend = fake_backend
+            ctx = FakeCtx()
+            ctx.channel.name = "analysis"
+
+            await bot.cmd_analyze(ctx, topic="inspect")
+
+            self.assertTrue(any("등록된 프로젝트" in msg for msg in ctx.sent))
+            self.assertEqual(calls, [])
+
+    async def test_brainstorm_requires_registered_project(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            bot._projects_store.PROJECTS_JSON_PATH = str(Path(tmp) / "projects.json")
+            bot._projects_store.TASKS_JSON_PATH = str(Path(tmp) / "tasks.json")
+            bot.write_projects({"projects": {}})
+            calls = []
+
+            async def fake_backend(*args, **kwargs):
+                calls.append(("backend", args, kwargs))
+                return "should not happen", None
+
+            bot.run_ask_backend = fake_backend
+            ctx = FakeCtx()
+            ctx.channel.name = "brainstorming"
+
+            await bot.cmd_brainstorm(ctx, topic="ideas")
+
+            self.assertTrue(any("등록된 프로젝트" in msg for msg in ctx.sent))
+            self.assertEqual(calls, [])
+
+    async def test_analyze_calls_backend_with_project_context(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": str(repo)}}})
+            calls = []
+
+            async def fake_backend(question, **kwargs):
+                calls.append((question, kwargs))
+                return "analysis ok", None
+
+            async def fail_intake(*args, **kwargs):
+                raise AssertionError("analysis must not call GitHub intake")
+
+            def fail_append(*args, **kwargs):
+                raise AssertionError("analysis must not append tasks")
+
+            bot.run_ask_backend = fake_backend
+            bot.intake_github_work = fail_intake
+            bot.append_task_locked = fail_append
+            ctx = FakeCtx()
+            ctx.channel.name = "analysis"
+
+            await bot.cmd_analyze(ctx, topic="inspect repo")
+
+            self.assertEqual(len(calls), 1)
+            question, kwargs = calls[0]
+            self.assertIn("Project context:", question)
+            self.assertIn("demo", question)
+            self.assertIn(str(repo), question)
+            self.assertIn("#analysis", question)
+            self.assertIn("analyst-style", question)
+            self.assertIn(bot.ANALYST_STYLE_INSTRUCTION, question)
+            self.assertIn("inspect repo", question)
+            self.assertEqual(kwargs["cwd"], str(repo))
+            self.assertEqual(kwargs["command_label"], "!analyze")
+            self.assertEqual(kwargs["extra_env"]["STELLARIS_PROJECT_NAME"], "demo")
+            self.assertEqual(kwargs["extra_env"]["STELLARIS_PROJECT_REPO_PATH"], str(repo))
+            self.assertEqual(kwargs["extra_env"]["STELLARIS_DISCORD_CHANNEL"], "#analysis")
+            self.assertEqual(kwargs["extra_env"]["STELLARIS_CONVERSATION_ROLE"], "analysis")
+            self.assertTrue(any("Analyze" in msg and "analysis ok" in msg for msg in ctx.sent))
+            self.assertFalse(tasks_path.exists())
+
+    async def test_brainstorm_calls_backend_with_project_context(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            projects_path = Path(tmp) / "projects.json"
+            tasks_path = Path(tmp) / "tasks.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": str(repo)}}})
+            calls = []
+
+            async def fake_backend(question, **kwargs):
+                calls.append((question, kwargs))
+                return "brainstorm ok", None
+
+            async def fail_intake(*args, **kwargs):
+                raise AssertionError("brainstorm must not call GitHub intake")
+
+            def fail_append(*args, **kwargs):
+                raise AssertionError("brainstorm must not append tasks")
+
+            bot.run_ask_backend = fake_backend
+            bot.intake_github_work = fail_intake
+            bot.append_task_locked = fail_append
+            ctx = FakeCtx()
+            ctx.channel.name = "brainstorming"
+
+            await bot.cmd_brainstorm(ctx, topic="new directions")
+
+            self.assertEqual(len(calls), 1)
+            question, kwargs = calls[0]
+            self.assertIn("Project context:", question)
+            self.assertIn("demo", question)
+            self.assertIn(str(repo), question)
+            self.assertIn("#brainstorming", question)
+            self.assertIn("brainstormer-style", question)
+            self.assertIn(bot.BRAINSTORMER_STYLE_INSTRUCTION, question)
+            self.assertIn("new directions", question)
+            self.assertEqual(kwargs["cwd"], str(repo))
+            self.assertEqual(kwargs["command_label"], "!brainstorm")
+            self.assertEqual(kwargs["extra_env"]["STELLARIS_CONVERSATION_ROLE"], "brainstorming")
+            self.assertEqual(kwargs["extra_env"]["STELLARIS_DISCORD_CHANNEL"], "#brainstorming")
+            self.assertTrue(any("Brainstorm" in msg and "brainstorm ok" in msg for msg in ctx.sent))
+            self.assertFalse(tasks_path.exists())
+
+    async def test_ask_remains_universal_in_analysis_channel(self):
+        bot = load_bot()
+        calls = []
+
+        async def fake_backend(question, **kwargs):
+            calls.append((question, kwargs))
+            return "ask ok", None
+
+        bot.run_ask_backend = fake_backend
+        ctx = FakeCtx()
+        ctx.channel.name = "analysis"
+        ctx.channel.category = None
+
+        await bot.cmd_ask(ctx, question="plain ask")
+
+        self.assertEqual(calls, [("plain ask", {})])
+        self.assertTrue(any("Ask" in msg and "ask ok" in msg for msg in ctx.sent))
+
+    async def test_run_in_conversation_channels_returns_guidance_without_task_write(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+            calls = []
+
+            async def fake_intake(*args, **kwargs):
+                calls.append(("intake", args, kwargs))
+                return None, None
+
+            def fake_append(*args, **kwargs):
+                calls.append(("append", args, kwargs))
+
+            bot.intake_github_work = fake_intake
+            bot.append_task_locked = fake_append
+
+            analysis_ctx = FakeCtx()
+            analysis_ctx.channel.name = "analysis"
+            await bot.cmd_run(analysis_ctx, request="ship")
+
+            brainstorming_ctx = FakeCtx()
+            brainstorming_ctx.channel.name = "brainstorming"
+            await bot.cmd_run(brainstorming_ctx, request="ship")
+
+            self.assertTrue(any("!analyze" in msg for msg in analysis_ctx.sent))
+            self.assertTrue(any("!brainstorm" in msg for msg in brainstorming_ctx.sent))
+            self.assertFalse(tasks_path.exists())
+            self.assertEqual(calls, [])
+
+    async def test_run_generic_non_pipeline_guidance_is_preserved(self):
+        bot = load_bot()
+        with tempfile.TemporaryDirectory() as tmp:
+            bot._projects_store.PROJECTS_JSON_PATH = str(Path(tmp) / "projects.json")
+            bot._projects_store.TASKS_JSON_PATH = str(Path(tmp) / "tasks.json")
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+            ctx = FakeCtx()
+            ctx.channel.name = "general"
+
+            await bot.cmd_run(ctx, request="ship")
+
+            self.assertTrue(any("#planning" in msg and "#development" in msg and "#review" in msg for msg in ctx.sent))
+            self.assertFalse((Path(tmp) / "tasks.json").exists())
 
     async def test_approve_persists_before_invoking_finalize_and_reports_commit(self):
         bot = load_bot()

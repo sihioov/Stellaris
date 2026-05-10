@@ -223,7 +223,26 @@ export GITHUB_TOKEN='<token with repo issue permission>'
 
 If Project sync is attempted after Issue creation and then fails, Canopus exits nonzero but writes one stdout JSON object with `ok=false` plus the created Issue metadata. Europa preserves that object so operators can see the Issue that already exists.
 
-## 11. Multi-project debugging startpoint
+## 11. Adding `#analysis` / `#brainstorming` to existing projects
+
+New `!new-project` categories create `#analysis` and `#brainstorming`
+automatically. Existing registered Discord project categories can be migrated
+manually:
+
+1. In the existing project category, create a text channel named `analysis`.
+2. In the same category, create a text channel named `brainstorming`.
+3. Do not edit `projects.json`; Europa recognizes these channels by name.
+
+`!analyze <topic>` is locked to `#analysis` and `!brainstorm <topic>` is locked
+to `#brainstorming`. Both commands require the category to already be registered
+to a project. They reuse `ASK_COMMAND` with analyst-style / brainstormer-style
+directive prompts and project context (`cwd`, environment metadata, and prompt
+header). They are conversation-only: Europa does not append tasks, create
+agendas, call GitHub intake, or invoke Canopus mutation paths for these commands.
+The `ASK_COMMAND` backend itself remains operator-owned, and current Discord
+output is capped at 1800 characters by Europa configuration.
+
+## 12. Multi-project debugging startpoint
 
 Use this procedure to verify that two Discord-registered projects each write artifacts and finalize records into their own `.canopus/` tree. Expected time: under 1 minute, 3 commands.
 
