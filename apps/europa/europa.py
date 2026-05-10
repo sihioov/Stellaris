@@ -154,6 +154,25 @@ def finalize_retry_command(task_id: str | None) -> str:
     return f"`!finalize {task_id}`" if task_id else "`!finalize <task_id>`"
 
 
+def format_token_usage(result: dict | None) -> str:
+    if not result:
+        return ""
+    usage = result.get("token_usage")
+    if not isinstance(usage, dict):
+        return ""
+
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+    if total_tokens <= 0:
+        return ""
+
+    return (
+        f"\n**Tokens**: {total_tokens:,} total "
+        f"(input {input_tokens / 1000:.1f}k / output {output_tokens / 1000:.1f}k)"
+    )
+
+
 def format_finalize_outcome(result: dict | None, error: str | None, task_id: str | None = None) -> str:
     retry_command = finalize_retry_command(task_id)
     if result is None:
@@ -192,7 +211,7 @@ def format_finalize_outcome(result: dict | None, error: str | None, task_id: str
     if result.get("commit"):
         details.append(f"commit `{result['commit']}`")
     suffix = f" ({', '.join(details)})" if details else ""
-    return f"**Finalize**: {summary}{suffix}"
+    return f"**Finalize**: {summary}{suffix}{format_token_usage(result)}"
 
 
 # ── events ───────────────────────────────────────────────────────────────────

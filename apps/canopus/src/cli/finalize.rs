@@ -6,7 +6,7 @@ use crate::cli::args::{
 use crate::cli::commands::delivery_finalize::DeliveryGateReport;
 use crate::core::commit_message::format_commit_message;
 use crate::core::module_derivation::derive_modules;
-use crate::core::{derive_run_identity, CanopusError, CanopusResult};
+use crate::core::{derive_run_identity, CanopusError, CanopusResult, TokenUsage};
 use crate::ports::ToolGateway;
 use serde::Serialize;
 use serde_json::Value;
@@ -326,6 +326,7 @@ async fn finalize_approved_inner(
     };
     let branch = format!("canopus/{}", task.run_id);
     let sidecar_path = finalize_record_path(&task_state, &task.run_id);
+    let token_usage = read_finalize_token_usage(&task_state, &task.run_id);
 
     if should_skip_existing_finalize_record_for_branch(&sidecar_path, mode, &branch) {
         let commit = read_commit_from_record(&sidecar_path);
@@ -344,6 +345,7 @@ async fn finalize_approved_inner(
             &sidecar_path,
             true,
             vec![],
+            token_usage,
         ));
     }
 
@@ -400,6 +402,7 @@ async fn finalize_approved_inner(
         &sidecar_path,
         false,
         vec![],
+        token_usage,
     ))
 }
 
@@ -595,6 +598,8 @@ struct FinalizeApprovedResponse {
     commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sidecar_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_usage: Option<FinalizeApprovedTokenUsage>,
     idempotent: bool,
     retryable: bool,
     warnings: Vec<String>,
@@ -610,6 +615,23 @@ struct FinalizeApprovedError {
     details: Value,
 }
 
+#[derive(Debug, Serialize)]
+struct FinalizeApprovedTokenUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+impl From<TokenUsage> for FinalizeApprovedTokenUsage {
+    fn from(usage: TokenUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total(),
+        }
+    }
+}
+
 impl FinalizeApprovedResponse {
     #[allow(clippy::too_many_arguments)]
     fn success(
@@ -622,6 +644,7 @@ impl FinalizeApprovedResponse {
         sidecar_path: &Path,
         idempotent: bool,
         warnings: Vec<String>,
+        token_usage: Option<FinalizeApprovedTokenUsage>,
     ) -> Self {
         Self {
             ok: true,
@@ -635,6 +658,7 @@ impl FinalizeApprovedResponse {
             branch: Some(branch.to_string()),
             commit,
             sidecar_path: Some(sidecar_path.display().to_string()),
+            token_usage,
             idempotent,
             retryable: false,
             warnings,
@@ -665,6 +689,7 @@ impl FinalizeApprovedResponse {
             branch: task.map(|task| format!("canopus/{}", task.run_id)),
             commit: None,
             sidecar_path: None,
+            token_usage: None,
             idempotent: false,
             retryable,
             warnings: vec![],
@@ -1026,6 +1051,18 @@ fn delivery_gate_record_path(state: &Path, run_id: &str) -> PathBuf {
         .join(format!("{run_id}-delivery-gate.json"))
 }
 
+fn token_usage_record_path(state: &Path, run_id: &str) -> PathBuf {
+    state
+        .join("runs")
+        .join(format!("{run_id}-token-usage.json"))
+}
+
+fn read_finalize_token_usage(state: &Path, run_id: &str) -> Option<FinalizeApprovedTokenUsage> {
+    let text = fs::read_to_string(token_usage_record_path(state, run_id)).ok()?;
+    let usage = serde_json::from_str::<TokenUsage>(&text).ok()?;
+    (usage.total() > 0).then(|| usage.into())
+}
+
 pub(crate) fn live_mutations_enabled() -> bool {
     std::env::var("CANOPUS_ENABLE_LIVE_MUTATIONS").as_deref() == Ok("1")
 }
@@ -1038,25 +1075,14 @@ pub(crate) fn notify_discord(message: &str) {
 }
 
 fn notify_discord_token_usage(state: &std::path::Path, run_id: &str) {
-    let path = state
-        .join("runs")
-        .join(format!("{run_id}-token-usage.json"));
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Some(usage) = read_finalize_token_usage(state, run_id) else {
         return;
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
-    };
-    let input = v["input_tokens"].as_u64().unwrap_or(0);
-    let output = v["output_tokens"].as_u64().unwrap_or(0);
-    let total = v["total_tokens"].as_u64().unwrap_or(input + output);
-    if total == 0 {
-        return;
-    }
     let msg = format!(
-        "🪙 **{total}** tokens (input: {:.1}k / output: {:.1}k)",
-        input as f64 / 1000.0,
-        output as f64 / 1000.0,
+        "🪙 **{}** tokens (input: {:.1}k / output: {:.1}k)",
+        usage.total_tokens,
+        usage.input_tokens as f64 / 1000.0,
+        usage.output_tokens as f64 / 1000.0,
     );
     notify_discord(&msg);
 }

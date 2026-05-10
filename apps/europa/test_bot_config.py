@@ -479,6 +479,11 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     "task_id": task_id,
                     "branch": "canopus/agenda-discord-1-discord-1",
                     "commit": "abc123",
+                    "token_usage": {
+                        "input_tokens": 12345,
+                        "output_tokens": 678,
+                        "total_tokens": 13023,
+                    },
                 }, None
 
             bot.finalize_approved_task = fake_finalize
@@ -491,6 +496,8 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("finalized", ctx.sent[0])
             self.assertIn("canopus/agenda-discord-1-discord-1", ctx.sent[0])
             self.assertIn("abc123", ctx.sent[0])
+            self.assertIn("13,023 total", ctx.sent[0])
+            self.assertIn("input 12.3k / output 0.7k", ctx.sent[0])
 
     async def test_approve_failure_does_not_roll_back_and_reports_retry_hint(self):
         bot = load_bot()

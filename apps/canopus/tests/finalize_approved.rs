@@ -201,6 +201,18 @@ fn finalize_approved_commits_on_existing_discord_submit_branch() {
     checkout_branch(&repo, expected_branch);
     let state = repo.join(".canopus");
     fs::create_dir_all(&state).unwrap();
+    fs::create_dir_all(state.join("runs")).unwrap();
+    fs::write(
+        state
+            .join("runs")
+            .join(format!("{agenda_id}-{task_id}-token-usage.json")),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "input_tokens": 12_345,
+            "output_tokens": 678
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     fs::write(repo.join("work.txt"), "change\n").unwrap();
     let tasks = state.join("tasks.json");
     write_tasks(&tasks, &repo, task_id, agenda_id);
@@ -216,6 +228,9 @@ fn finalize_approved_commits_on_existing_discord_submit_branch() {
     assert_eq!(json["status"], "finalized");
     assert_eq!(json["branch"], expected_branch);
     assert!(json["commit"].as_str().unwrap_or("").len() >= 7);
+    assert_eq!(json["token_usage"]["input_tokens"], 12_345);
+    assert_eq!(json["token_usage"]["output_tokens"], 678);
+    assert_eq!(json["token_usage"]["total_tokens"], 13_023);
 
     let branch = Command::new("git")
         .args(["branch", "--show-current"])

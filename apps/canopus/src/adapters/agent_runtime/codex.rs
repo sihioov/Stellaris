@@ -89,6 +89,7 @@ impl AgentRuntime for CodexAgentRuntime {
             .arg(&context.repo_path)
             .arg("--sandbox")
             .arg(sandbox_for_role(&task.role, &self.sandbox))
+            .arg("--json")
             .arg("--output-last-message")
             .arg(&last_message_path);
         if let Some(model) = &self.model {
@@ -161,50 +162,114 @@ impl AgentRuntime for CodexAgentRuntime {
 }
 
 fn extract_token_usage(stdout: &str) -> Option<TokenUsage> {
+    let mut total = TokenUsage::default();
     for line in stdout.lines() {
-        if !line.contains("\"usage\"") {
+        if let Some(usage) = extract_token_usage_from_json_line(line) {
+            total += usage;
             continue;
         }
-        if let Some(start) = line.find('{') {
-            let fragment = &line[start..];
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(fragment) {
-                // Try top-level and Responses-API-nested usage nodes.
-                for usage in [&v["usage"], &v["response"]["usage"]] {
-                    if let (Some(i), Some(o)) = (
-                        usage["input_tokens"].as_u64(),
-                        usage["output_tokens"].as_u64(),
-                    ) {
-                        return Some(TokenUsage {
-                            input_tokens: i,
-                            output_tokens: o,
-                        });
-                    }
-                    if let (Some(p), Some(c)) = (
-                        usage["prompt_tokens"].as_u64(),
-                        usage["completion_tokens"].as_u64(),
-                    ) {
-                        return Some(TokenUsage {
-                            input_tokens: p,
-                            output_tokens: c,
-                        });
-                    }
-                    if let Some(total) = usage["total_tokens"].as_u64() {
-                        let input = usage["input_tokens"]
-                            .as_u64()
-                            .or_else(|| usage["prompt_tokens"].as_u64())
-                            .unwrap_or(0);
-                        return Some(TokenUsage {
-                            input_tokens: input,
-                            output_tokens: total.saturating_sub(input),
-                        });
-                    }
-                }
-            }
+        if let Some(usage) = extract_token_usage_from_telemetry_line(line) {
+            total += usage;
         }
     }
-    None
+    (total.total() > 0).then_some(total)
 }
 
+fn extract_token_usage_from_json_line(line: &str) -> Option<TokenUsage> {
+    if !line.contains("usage")
+        && !line.contains("input_token_count")
+        && !line.contains("input_tokens")
+        && !line.contains("prompt_tokens")
+        && !line.contains("total_tokens")
+    {
+        return None;
+    }
+    let start = line.find('{')?;
+    let fragment = &line[start..];
+    let value = serde_json::from_str::<serde_json::Value>(fragment).ok()?;
+    extract_token_usage_from_value(&value)
+}
+
+fn extract_token_usage_from_value(value: &serde_json::Value) -> Option<TokenUsage> {
+    let mut total = TokenUsage::default();
+    collect_token_usage_values(value, &mut total);
+    (total.total() > 0).then_some(total)
+}
+
+fn collect_token_usage_values(value: &serde_json::Value, total: &mut TokenUsage) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(usage) = token_usage_from_object(object) {
+                *total += usage;
+                return;
+            }
+            for child in object.values() {
+                collect_token_usage_values(child, total);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_token_usage_values(child, total);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn token_usage_from_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<TokenUsage> {
+    let input = object
+        .get("input_tokens")
+        .or_else(|| object.get("prompt_tokens"))
+        .or_else(|| object.get("input_token_count"))
+        .and_then(serde_json::Value::as_u64);
+    let output = object
+        .get("output_tokens")
+        .or_else(|| object.get("completion_tokens"))
+        .or_else(|| object.get("output_token_count"))
+        .and_then(serde_json::Value::as_u64);
+    match (input, output) {
+        (Some(input_tokens), Some(output_tokens)) => Some(TokenUsage {
+            input_tokens,
+            output_tokens,
+        }),
+        (Some(input_tokens), None) => object
+            .get("total_tokens")
+            .or_else(|| object.get("total_token_count"))
+            .and_then(serde_json::Value::as_u64)
+            .map(|total_tokens| TokenUsage {
+                input_tokens,
+                output_tokens: total_tokens.saturating_sub(input_tokens),
+            }),
+        _ => None,
+    }
+}
+
+fn extract_token_usage_from_telemetry_line(line: &str) -> Option<TokenUsage> {
+    if !line.contains("event.name=\"codex.sse_event\"")
+        || !line.contains("event.kind=response.completed")
+        || line.contains("codex_otel.trace_safe")
+    {
+        return None;
+    }
+    let input_tokens = key_value_u64(line, "input_token_count")?;
+    let output_tokens = key_value_u64(line, "output_token_count")?;
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+    })
+}
+
+fn key_value_u64(line: &str, key: &str) -> Option<u64> {
+    let start = line.find(&format!("{key}="))? + key.len() + 1;
+    let rest = &line[start..];
+    let digits = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
 
 fn codex_prompt(task: &AgentTask, prior_artifacts: &[Artifact]) -> String {
     let role_instruction = match &task.role {
@@ -375,4 +440,39 @@ fn shell_words(input: &str) -> Vec<String> {
         words.push(current);
     }
     words
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_and_sums_jsonl_usage_events() {
+        let stdout = r#"
+{"type":"event","msg":{"usage":{"input_tokens":10,"output_tokens":2}}}
+{"type":"event","msg":{"response":{"usage":{"prompt_tokens":20,"completion_tokens":3}}}}
+{"type":"event","msg":{"usage":{"input_tokens":5,"total_tokens":9}}}
+"#;
+
+        let usage = extract_token_usage(stdout).unwrap();
+
+        assert_eq!(usage.input_tokens, 35);
+        assert_eq!(usage.output_tokens, 9);
+        assert_eq!(usage.total(), 44);
+    }
+
+    #[test]
+    fn extracts_codex_telemetry_token_counts_without_double_counting_trace_safe() {
+        let stdout = r#"
+2026-05-08T17:24:08.693778Z INFO codex_otel.log_only: event.name="codex.sse_event" event.kind=response.completed input_token_count=23147 output_token_count=195 cached_token_count=7552 reasoning_token_count=29 tool_token_count=23342
+2026-05-08T17:24:08.693784Z INFO codex_otel.trace_safe: event.name="codex.sse_event" event.kind=response.completed input_token_count=23147 output_token_count=195 cached_token_count=7552 reasoning_token_count=29 tool_token_count=23342
+2026-05-08T17:24:15.759128Z INFO codex_otel.log_only: event.name="codex.sse_event" event.kind=response.completed input_token_count=24717 output_token_count=321 cached_token_count=3456 reasoning_token_count=24 tool_token_count=25038
+"#;
+
+        let usage = extract_token_usage(stdout).unwrap();
+
+        assert_eq!(usage.input_tokens, 47_864);
+        assert_eq!(usage.output_tokens, 516);
+        assert_eq!(usage.total(), 48_380);
+    }
 }

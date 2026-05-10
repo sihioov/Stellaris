@@ -97,6 +97,7 @@ async fn codex_runtime_invokes_codex_exec_and_captures_message_log() {
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--sandbox", "read-only"]));
+    assert!(args.iter().any(|arg| arg == "--json"));
     assert!(args
         .windows(2)
         .any(|pair| pair[0] == "--output-last-message"));
