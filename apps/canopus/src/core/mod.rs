@@ -13,6 +13,6 @@ pub use run_identity::{derive_run_identity, sanitize_run_identity};
 pub use types::{
     deterministic_agenda_id_for_github_issue, deterministic_agenda_id_for_github_project, Agenda,
     AgendaSource, AgentMessage, AgentRole, AgentRunResult, AgentTask, Artifact, ArtifactKind,
-    GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode, StageRecord,
+    GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode, StageRecord, TokenUsage,
 };
 pub use workflow::WorkflowState;

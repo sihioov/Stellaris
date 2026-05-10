@@ -407,6 +407,35 @@ pub struct AgentMessage {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn total(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+}
+
+impl std::ops::Add for TokenUsage {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens + rhs.input_tokens,
+            output_tokens: self.output_tokens + rhs.output_tokens,
+        }
+    }
+}
+
+impl std::ops::AddAssign for TokenUsage {
+    fn add_assign(&mut self, rhs: Self) {
+        self.input_tokens += rhs.input_tokens;
+        self.output_tokens += rhs.output_tokens;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AgentRunResult {
     pub task_id: String,
@@ -414,6 +443,8 @@ pub struct AgentRunResult {
     pub artifacts: Vec<Artifact>,
     #[serde(default)]
     pub message_log: Vec<AgentMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

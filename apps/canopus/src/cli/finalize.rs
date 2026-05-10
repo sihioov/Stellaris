@@ -94,11 +94,14 @@ pub(crate) async fn watch(args: &[String]) -> CanopusResult<()> {
                         })
                         .and_then(|()| persist_delivery_gate_report_if_absent(&task_state, &run_id))
                     {
-                        Ok(()) => log::info!(
-                            "[watch] finalize record persisted for {} ({})",
-                            task.task_id,
-                            finalize_path.display()
-                        ),
+                        Ok(()) => {
+                            log::info!(
+                                "[watch] finalize record persisted for {} ({})",
+                                task.task_id,
+                                finalize_path.display()
+                            );
+                            notify_discord_token_usage(&task_state, &run_id);
+                        }
                         Err(e) => log::error!("[watch] finalize 실패 {}: {e}", task.task_id),
                     }
                 }
@@ -524,6 +527,22 @@ pub(crate) fn notify_discord(message: &str) {
         let body = serde_json::json!({"content": message});
         let _ = ureq::post(&url).send_json(body);
     }
+}
+
+fn notify_discord_token_usage(state: &std::path::Path, run_id: &str) {
+    let path = state.join("runs").join(format!("{run_id}-token-usage.json"));
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let input = v["input_tokens"].as_u64().unwrap_or(0);
+    let output = v["output_tokens"].as_u64().unwrap_or(0);
+    let total = v["total_tokens"].as_u64().unwrap_or(input + output);
+    if total == 0 { return }
+    let msg = format!(
+        "🪙 **{total}** tokens (input: {:.1}k / output: {:.1}k)",
+        input as f64 / 1000.0,
+        output as f64 / 1000.0,
+    );
+    notify_discord(&msg);
 }
 
 #[cfg(test)]

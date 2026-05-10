@@ -1,6 +1,6 @@
 use crate::core::{
     AgentMessage, AgentRole, AgentRunResult, AgentTask, Artifact, ArtifactKind, CanopusError,
-    CanopusResult,
+    CanopusResult, TokenUsage,
 };
 use crate::ports::{AgentContext, AgentRuntime};
 use async_trait::async_trait;
@@ -155,8 +155,46 @@ impl AgentRuntime for CodexAgentRuntime {
                     created_at: Utc::now(),
                 },
             ],
+            token_usage: extract_token_usage(&stdout),
         })
     }
+}
+
+fn extract_token_usage(stdout: &str) -> Option<TokenUsage> {
+    for line in stdout.lines() {
+        if !line.contains("\"usage\"") {
+            continue;
+        }
+        // Try to find a JSON object in the line containing a usage block.
+        if let Some(start) = line.find('{') {
+            let fragment = &line[start..];
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(fragment) {
+                // Responses API: {"usage": {"input_tokens": N, "output_tokens": N}}
+                if let (Some(input), Some(output)) = (
+                    v["usage"]["input_tokens"].as_u64(),
+                    v["usage"]["output_tokens"].as_u64(),
+                ) {
+                    return Some(TokenUsage { input_tokens: input, output_tokens: output });
+                }
+                // Chat Completions: {"usage": {"prompt_tokens": N, "completion_tokens": N}}
+                if let (Some(prompt), Some(completion)) = (
+                    v["usage"]["prompt_tokens"].as_u64(),
+                    v["usage"]["completion_tokens"].as_u64(),
+                ) {
+                    return Some(TokenUsage { input_tokens: prompt, output_tokens: completion });
+                }
+                // Nested: search one level deeper for a usage object with total_tokens
+                if let Some(total) = v["usage"]["total_tokens"].as_u64() {
+                    let input = v["usage"]["input_tokens"]
+                        .as_u64()
+                        .or_else(|| v["usage"]["prompt_tokens"].as_u64())
+                        .unwrap_or(0);
+                    return Some(TokenUsage { input_tokens: input, output_tokens: total.saturating_sub(input) });
+                }
+            }
+        }
+    }
+    None
 }
 
 fn codex_prompt(task: &AgentTask, prior_artifacts: &[Artifact]) -> String {

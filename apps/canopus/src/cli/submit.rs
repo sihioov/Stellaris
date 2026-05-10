@@ -11,7 +11,7 @@ use crate::cli::finalize::notify_discord;
 use crate::core::{
     derive_run_identity, Agenda, AgendaSource, AgentRole, AgentTask, Artifact, ArtifactKind,
     CanopusError, CanopusResult, GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode,
-    Pipeline, StageRecord, WorkflowState,
+    Pipeline, StageRecord, TokenUsage, WorkflowState,
 };
 use crate::ports::{AgentContext, AgentRuntime, ArtifactStore, TaskBackend, ToolGateway};
 use chrono::{DateTime, Utc};
@@ -85,6 +85,7 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
     let mut check_completed = false;
     let mut reviewed = false;
     let mut qa_issue_number = parsed.github_issue_number;
+    let mut total_token_usage: Option<TokenUsage> = None;
 
     for (index, role) in pipeline.agent_roles().into_iter().enumerate() {
         let stage_name = stage_name_for_role(&role);
@@ -115,6 +116,9 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
             &mut stage_records
         );
 
+        if let Some(usage) = result.token_usage {
+            *total_token_usage.get_or_insert_with(TokenUsage::default) += usage;
+        }
         let mut stage_artifacts = Vec::new();
         for artifact in &result.artifacts {
             stage_artifacts.push(
@@ -242,6 +246,7 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
             .to_string()],
     ));
     persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
+    persist_token_usage(&parsed.state, &agenda.id, total_token_usage.as_ref());
 
     println!(
         "Canopus task {} completed local patch flow on branch {branch}",
@@ -586,6 +591,15 @@ impl StageTimer {
             artifacts,
         }
     }
+}
+
+fn persist_token_usage(state: &Path, agenda_id: &str, usage: Option<&TokenUsage>) {
+    let Some(usage) = usage else { return };
+    let runs_dir = state.join("runs");
+    let _ = fs::create_dir_all(&runs_dir);
+    let path = runs_dir.join(format!("{agenda_id}-token-usage.json"));
+    let Ok(json) = serde_json::to_vec_pretty(usage) else { return };
+    let _ = fs::write(path, json);
 }
 
 fn persist_run_records(

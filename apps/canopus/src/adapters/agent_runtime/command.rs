@@ -71,6 +71,7 @@ impl AgentRuntime for CommandAgentRuntime {
                 content,
             }],
             message_log: Vec::new(),
+            token_usage: None,
         })
     }
 }
