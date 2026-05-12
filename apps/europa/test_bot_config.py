@@ -210,6 +210,28 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertIsNone(payload.get("github_issue_number"))
         self.assertIsNone(payload.get("github_issue_url"))
 
+    def test_task_payload_does_not_carry_runtime_backend_selection(self):
+        bot = load_bot()
+        ctx = types.SimpleNamespace(
+            guild=types.SimpleNamespace(id=1),
+            channel=types.SimpleNamespace(id=2),
+            message=types.SimpleNamespace(id=3),
+        )
+
+        payload = bot.build_task_payload(
+            ctx,
+            "discord-abc123",
+            "backend=sample_b remains request text only",
+            {"repo_path": "/repo"},
+            "canopus.planner",
+        )
+
+        self.assertEqual(payload["role_mode"], "plan")
+        self.assertEqual(payload["request"], "backend=sample_b remains request text only")
+        self.assertNotIn("backend", payload)
+        self.assertNotIn("runtime_backend", payload)
+        self.assertNotIn("canopus_backend", payload)
+
     def test_task_payload_uses_deterministic_agenda_id_when_work_intake_carries_issue(self):
         bot = load_bot(GITHUB_OWNER="acme", GITHUB_REPO="demo")
         ctx = types.SimpleNamespace(

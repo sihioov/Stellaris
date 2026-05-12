@@ -1,4 +1,6 @@
-use crate::adapters::agent_runtime::{CodexAgentRuntime, CommandAgentRuntime, MockAgentRuntime};
+use crate::adapters::agent_runtime::{
+    CodexAgentRuntime, CommandAgentRuntime, MockAgentRuntime, PluginCommandAgentRuntime,
+};
 use crate::adapters::artifact_store::LocalFileArtifactStore;
 use crate::adapters::github::{
     build_project_sync_plan, GitHubClient, GitHubProjectGates, GitHubProjectSyncConfig,
@@ -11,17 +13,20 @@ use crate::cli::args::{env_flag, SubmitArgs};
 use crate::cli::finalize::notify_discord;
 use crate::core::{
     derive_run_identity, helper_artifact_task_id, select_pre_run_helpers, Agenda, AgendaSource,
-    AgentRole, AgentTask, Artifact, ArtifactKind, CanopusError, CanopusResult, GitHubIssueMetadata,
-    GitHubProjectMetadata, GitHubProjectMode, HelperProvenance, HelperRequest, Pipeline,
-    PreRunHelperConfig, PreRunHelperFailurePolicy, PreRunHelperMode, StageRecord, TokenUsage,
-    WorkflowState,
+    AgentRole, AgentTask, Artifact, ArtifactKind, BackendKind, BackendSelection, CanopusError,
+    CanopusResult, GitHubIssueMetadata, GitHubProjectMetadata, GitHubProjectMode, HelperProvenance,
+    HelperRequest, Pipeline, PreRunHelperConfig, PreRunHelperFailurePolicy, PreRunHelperMode,
+    PreparationPolicy, RuntimeCapability, RuntimeRegistry, StageRecord, TokenUsage, WorkflowState,
 };
 use crate::ports::{
     AgentContext, AgentRuntime, ArtifactStore, PreRunHelperBackend, TaskBackend, ToolGateway,
 };
 use chrono::{DateTime, Utc};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 macro_rules! try_stage {
@@ -44,11 +49,35 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
     let branch = format!("canopus/{}", agenda.id);
     let artifact_store = LocalFileArtifactStore::new(parsed.state.join("artifacts"));
     let backend = StellarisTaskBackend::new(parsed.state.join("tasks.json"))?;
-    let runtime = selected_runtime()?;
+    let registry = RuntimeRegistry::from_env()?;
     let helper_config = PreRunHelperConfig::from_env()?;
     let helper_backend = selected_pre_run_helper_backend(&helper_config);
     let tools = LocalToolGateway;
     let mut stage_records: Vec<StageRecord> = Vec::new();
+    let selection = match registry.resolve(
+        &parsed.role_mode,
+        parsed.task_type.as_ref(),
+        &parsed.request,
+    ) {
+        Ok(selection) => selection,
+        Err(err) => {
+            persist_backend_selection_failure(
+                &artifact_store,
+                &parsed.state,
+                &agenda.id,
+                &registry.describe_attempt(
+                    &parsed.role_mode,
+                    parsed.task_type.as_ref(),
+                    &parsed.request,
+                ),
+                &parsed,
+                &err,
+                &mut stage_records,
+            )?;
+            return Err(err);
+        }
+    };
+    let runtime = selected_runtime_for_backend(&selection)?;
 
     let stage = StageTimer::start("prepare");
     try_stage!(
@@ -58,13 +87,22 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
         &agenda.id,
         &mut stage_records
     );
-    try_stage!(
-        tools.create_branch(&parsed.repo, &branch),
-        &stage,
+    persist_backend_selection(
+        &artifact_store,
         &parsed.state,
         &agenda.id,
-        &mut stage_records
-    );
+        &selection,
+        &mut stage_records,
+    )?;
+    if selection.preparation == PreparationPolicy::Branch {
+        try_stage!(
+            tools.create_branch(&parsed.repo, &branch),
+            &stage,
+            &parsed.state,
+            &agenda.id,
+            &mut stage_records
+        );
+    }
     stage_records.push(stage.finish("ok", vec![]));
     persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
     persist_upstream_provenance(
@@ -75,11 +113,7 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
         &mut stage_records,
     )?;
 
-    let pipeline = parsed
-        .task_type
-        .as_ref()
-        .map(Pipeline::from_task_type)
-        .unwrap_or(Pipeline::DevMode);
+    let pipeline = pipeline_for_selection(&selection, parsed.task_type.as_ref());
     log::info!(
         "[pipeline] selected {:?} for agenda {} (task_type={:?})",
         pipeline,
@@ -93,6 +127,15 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
     let mut reviewed = false;
     let mut qa_issue_number = parsed.github_issue_number;
     let mut total_token_usage: Option<TokenUsage> = None;
+    let read_only_runtime_repo = if selection.preparation == PreparationPolicy::ReadOnly {
+        Some(ReadOnlyRuntimeRepo::copy_from(&parsed.repo, &agenda.id)?)
+    } else {
+        None
+    };
+    let runtime_repo = read_only_runtime_repo
+        .as_ref()
+        .map(ReadOnlyRuntimeRepo::path)
+        .unwrap_or(parsed.repo.as_path());
 
     for (index, role) in pipeline.agent_roles().into_iter().enumerate() {
         let stage_name = stage_name_for_role(&role);
@@ -120,12 +163,20 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
             &mut stage_records,
         )?;
         prior_artifacts.extend(helper_artifacts);
+        let read_only_before = if selection.preparation == PreparationPolicy::ReadOnly {
+            Some((
+                WorktreeSnapshot::capture(&parsed.repo)?,
+                RuntimeTreeSnapshot::capture(runtime_repo)?,
+            ))
+        } else {
+            None
+        };
         let result = try_stage!(
             runtime
                 .run(
                     &task,
                     &AgentContext {
-                        repo_path: parsed.repo.clone(),
+                        repo_path: runtime_repo.to_path_buf(),
                     },
                     &prior_artifacts,
                 )
@@ -135,6 +186,18 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
             &agenda.id,
             &mut stage_records
         );
+        if let Some((repo_before, runtime_before)) = read_only_before {
+            let repo_after = WorktreeSnapshot::capture(&parsed.repo)?;
+            let runtime_after = RuntimeTreeSnapshot::capture(runtime_repo)?;
+            if repo_before != repo_after || runtime_before != runtime_after {
+                stage_records.push(stage.record("failed", Vec::new()));
+                let _ = persist_run_records(&parsed.state, &agenda.id, &stage_records);
+                return Err(CanopusError::Runtime(format!(
+                    "read-only backend '{}' mutated the repository",
+                    selection.backend_name
+                )));
+            }
+        }
 
         if let Some(usage) = result.token_usage {
             *total_token_usage.get_or_insert_with(TokenUsage::default) += usage;
@@ -268,10 +331,18 @@ pub(crate) async fn submit(args: &[String]) -> CanopusResult<()> {
     persist_run_records(&parsed.state, &agenda.id, &stage_records)?;
     persist_token_usage(&parsed.state, &agenda.id, total_token_usage.as_ref());
 
-    println!(
-        "Canopus task {} completed local patch flow on branch {branch}",
-        agenda.id
-    );
+    match selection.preparation {
+        PreparationPolicy::Branch => println!(
+            "Canopus task {} completed local patch flow on branch {branch}",
+            agenda.id
+        ),
+        PreparationPolicy::ReadOnly => println!(
+            "Canopus task {} completed read-only {} flow with backend {}",
+            agenda.id,
+            selection.capability.as_str(),
+            selection.backend_name
+        ),
+    }
     if let Some(n) = qa_issue_number {
         log::info!("[submit] Q&A issue #{n} — watch/finalize may close it after approval");
     }
@@ -354,6 +425,70 @@ fn stage_name_for_role(role: &AgentRole) -> &str {
         AgentRole::Reviewer => "review",
         AgentRole::Custom(name) => name.as_str(),
     }
+}
+
+fn pipeline_for_selection(
+    selection: &BackendSelection,
+    task_type: Option<&dysonsphere::message::TaskType>,
+) -> Pipeline {
+    match selection.capability {
+        RuntimeCapability::Plan => Pipeline::PlannerOnly,
+        RuntimeCapability::Review => Pipeline::ReviewerOnly,
+        RuntimeCapability::Implement => task_type
+            .map(Pipeline::from_task_type)
+            .unwrap_or(Pipeline::DevMode),
+    }
+}
+
+fn persist_backend_selection(
+    artifact_store: &LocalFileArtifactStore,
+    state_path: &Path,
+    agenda_id: &str,
+    selection: &BackendSelection,
+    stage_records: &mut Vec<StageRecord>,
+) -> CanopusResult<()> {
+    let stage = StageTimer::start("backend-selection");
+    let artifact = Artifact {
+        task_id: format!("{agenda_id}-backend-selection"),
+        kind: ArtifactKind::RuntimeLog,
+        content: serde_json::to_string_pretty(selection)
+            .map_err(|e| CanopusError::Runtime(format!("serialize backend selection: {e}")))?,
+    };
+    let saved = artifact_store.save(&artifact)?;
+    stage_records.push(stage.finish("ok", vec![saved.path.display().to_string()]));
+    persist_run_records(state_path, agenda_id, stage_records)
+}
+
+fn persist_backend_selection_failure(
+    artifact_store: &LocalFileArtifactStore,
+    state_path: &Path,
+    agenda_id: &str,
+    attempt: &crate::core::BackendSelectionAttempt,
+    parsed: &SubmitArgs,
+    err: &CanopusError,
+    stage_records: &mut Vec<StageRecord>,
+) -> CanopusResult<()> {
+    let stage = StageTimer::start("backend-selection");
+    let artifact = Artifact {
+        task_id: format!("{agenda_id}-backend-selection"),
+        kind: ArtifactKind::RuntimeLog,
+        content: serde_json::to_string_pretty(&serde_json::json!({
+            "status": "failed",
+            "reason": err.to_string(),
+            "capability": attempt.capability,
+            "requested_backend": attempt.requested_backend,
+            "directive_source": attempt.directive_source,
+            "read_only": attempt.read_only,
+            "role_mode": parsed.role_mode,
+            "task_type": parsed.task_type,
+            "preparation": "not-started",
+            "runtime": "not-constructed"
+        }))
+        .map_err(|e| CanopusError::Runtime(format!("serialize backend selection failure: {e}")))?,
+    };
+    let saved = artifact_store.save(&artifact)?;
+    stage_records.push(stage.finish("failed", vec![saved.path.display().to_string()]));
+    persist_run_records(state_path, agenda_id, stage_records)
 }
 
 fn run_check_stage(
@@ -587,6 +722,146 @@ struct StageTimer {
     instant: Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorktreeSnapshot {
+    branch: String,
+    status: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeTreeSnapshot {
+    entries: Vec<String>,
+}
+
+impl RuntimeTreeSnapshot {
+    fn capture(root: &Path) -> CanopusResult<Self> {
+        let mut entries = Vec::new();
+        collect_runtime_tree_entries(root, root, &mut entries)?;
+        entries.sort();
+        Ok(Self { entries })
+    }
+}
+
+fn collect_runtime_tree_entries(
+    root: &Path,
+    current: &Path,
+    entries: &mut Vec<String>,
+) -> CanopusResult<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            entries.push(format!("dir:{rel}"));
+            collect_runtime_tree_entries(root, &path, entries)?;
+        } else if file_type.is_file() {
+            let bytes = fs::read(&path)?;
+            let mut hasher = DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            entries.push(format!("file:{rel}:{}:{:x}", bytes.len(), hasher.finish()));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ReadOnlyRuntimeRepo {
+    path: PathBuf,
+}
+
+impl ReadOnlyRuntimeRepo {
+    fn copy_from(repo: &Path, agenda_id: &str) -> CanopusResult<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "canopus-read-only-runtime-{}-{}",
+            std::process::id(),
+            agenda_id
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path)?;
+        copy_read_only_runtime_tree(repo, &path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ReadOnlyRuntimeRepo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn copy_read_only_runtime_tree(source: &Path, destination: &Path) -> CanopusResult<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if matches!(name, ".git" | ".canopus" | ".omx" | "target") {
+            continue;
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(name);
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination_path)?;
+            copy_read_only_runtime_tree(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
+
+impl WorktreeSnapshot {
+    fn capture(repo: &Path) -> CanopusResult<Self> {
+        let branch = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(repo)
+            .output()?;
+        if !branch.status.success() {
+            return Err(CanopusError::Tool(
+                String::from_utf8_lossy(&branch.stderr).to_string(),
+            ));
+        }
+        let status = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .current_dir(repo)
+            .output()?;
+        if !status.status.success() {
+            return Err(CanopusError::Tool(
+                String::from_utf8_lossy(&status.stderr).to_string(),
+            ));
+        }
+        Ok(Self {
+            branch: String::from_utf8_lossy(&branch.stdout).trim().to_string(),
+            status: String::from_utf8_lossy(&status.stdout)
+                .lines()
+                .filter(|line| !is_ignored_runtime_status_line(line))
+                .map(ToString::to_string)
+                .collect(),
+        })
+    }
+}
+
+fn is_ignored_runtime_status_line(line: &str) -> bool {
+    let path = line.get(3..).unwrap_or("").trim().trim_matches('"');
+    path == ".canopus"
+        || path.starts_with(".canopus/")
+        || path == ".omx"
+        || path.starts_with(".omx/")
+        || path == "target"
+        || path.starts_with("target/")
+}
+
 impl StageTimer {
     fn start(name: impl Into<String>) -> Self {
         Self {
@@ -783,6 +1058,28 @@ fn selected_runtime() -> CanopusResult<Box<dyn AgentRuntime>> {
         Ok(value) => Err(CanopusError::InvalidInput(format!(
             "unsupported CANOPUS_AGENT_RUNTIME: {value}"
         ))),
+    }
+}
+
+fn selected_runtime_for_backend(
+    selection: &BackendSelection,
+) -> CanopusResult<Box<dyn AgentRuntime>> {
+    match selection.backend_kind {
+        BackendKind::Legacy => selected_runtime(),
+        BackendKind::Mock => Ok(Box::new(MockAgentRuntime)),
+        BackendKind::Codex => Ok(Box::new(CodexAgentRuntime::from_env()?)),
+        BackendKind::Command => Ok(Box::new(PluginCommandAgentRuntime::new(
+            selection.backend_name.clone(),
+            selection.capability,
+            selection.argv.clone().ok_or_else(|| {
+                CanopusError::InvalidInput(format!(
+                    "command backend '{}' requires argv",
+                    selection.backend_name
+                ))
+            })?,
+            selection.env_allowlist.clone(),
+            selection.timeout_seconds,
+        )?)),
     }
 }
 

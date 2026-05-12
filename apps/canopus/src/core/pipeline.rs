@@ -4,6 +4,8 @@ use dysonsphere::message::TaskType;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pipeline {
     DevMode,       // Analyst → Planner → Coder → Reviewer
+    PlannerOnly,   // Planner
+    ReviewerOnly,  // Reviewer
     BugFix,        // Analyzer → Coder → Tester
     SecurityAudit, // SecurityAuditor → Coder → Reviewer
     TestWriter,    // Analyzer → TestWriter
@@ -24,6 +26,8 @@ impl Pipeline {
     /// 이 파이프라인의 에이전트 역할 순서 반환
     pub fn agent_roles(&self) -> Vec<AgentRole> {
         match self {
+            Pipeline::PlannerOnly => vec![AgentRole::Planner],
+            Pipeline::ReviewerOnly => vec![AgentRole::Reviewer],
             Pipeline::DevMode => vec![
                 AgentRole::Custom("analyst".to_string()),
                 AgentRole::Planner,
