@@ -12,6 +12,7 @@ apps/europa/projects.json
 /package-lock.json
 .canopus/
 .claude/
+.antigravitycli/
 .codex
 .codex/
 .omc/
