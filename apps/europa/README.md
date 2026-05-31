@@ -101,3 +101,28 @@ operator-owned; Europa only avoids its own task/GitHub/Canopus mutation paths.
 For the local v1 pipeline, set `TASKS_JSON_PATH` to the same absolute `tasks.json` consumed by TON618 (`TASKS_JSON_PATH`) and Laniakea (`LANIAKEA_FILE_PATH`). `!run` remains the human request confirmation, creates a unique `agenda_id`, and records GitHub repository/project metadata in the task payload without requiring the Discord bot to push branches or create PRs directly. `!approve` is the final human gate: it moves a `PendingReview` task to `Processed`, records approval timestamps, sets `finalize_requested_at`, and invokes `canopus finalize-approved --tasks <tasks.json> --task-id <task_id> --json`. Canopus owns git policy and sidecars; Europa only reports the structured result. If finalization fails after approval, the approval remains recorded and the operator can retry with `!finalize <task_id>`. `canopus watch` remains optional/background-compatible, but normal Discord approval no longer silently depends on a manually started watcher.
 
 GitHub Project v2 integration is dry-run/offline by default. When `!register`/`!new-project` includes `--github owner/repo --project-owner org:name|user:name`, the bot treats GitHub registration as strict-live: it calls Canopus `project-register` and writes `projects.json` only after Canopus returns complete GitHub IDs/URLs. `!run` and `!propose-approve` call Canopus `work-intake` before appending/promoting tasks; failures leave local task state unchanged or keep proposals in `PendingProposal` with retry metadata. Live Project mutations require all Canopus gates (`CANOPUS_ENABLE_GITHUB=1`, `CANOPUS_ENABLE_LIVE_MUTATIONS=1`, `CANOPUS_ALLOW_GITHUB_REGISTRATION_MUTATION=1`, and `CANOPUS_ALLOW_GITHUB_PROJECT_MUTATION=1`) plus a PAT or GitHub App credential with Projects permissions. GitHub Actions `GITHUB_TOKEN` is not sufficient for Project v2 access. Merge/deploy remain default-off and require the dedicated PR/merge/deploy gates plus explicit deployment config.
+
+## Local dev Discord verification
+
+Use this runbook for the v1 core live-pilot-adjacent check. It verifies the real Discord control surface and local Canopus finalization path while keeping GitHub push and draft PR creation closed.
+
+1. Set local-only gates:
+
+```bash
+export TASKS_JSON_PATH="$PWD/.canopus/dev/tasks.json"
+export LANIAKEA_FILE_PATH="$TASKS_JSON_PATH"
+export CANOPUS_STATE_PATH="$PWD/.canopus/dev"
+export CANOPUS_GITHUB_PROJECT_MODE=dry-run-offline
+export CANOPUS_ALLOW_LOCAL_COMMIT=0
+unset CANOPUS_ENABLE_LIVE_MUTATIONS
+unset CANOPUS_ALLOW_GITHUB_PR_MUTATION
+unset CANOPUS_ALLOW_GITHUB_MERGE
+unset CANOPUS_ALLOW_DEPLOY
+```
+
+2. Start the dev bot with a real `DISCORD_BOT_TOKEN`, then in the registered project category run `!run implement status summary` from `#development`.
+3. Inspect the appended task in `$TASKS_JSON_PATH`. Required payload evidence: `job_id`, `intent`, `job_status`, `classification_reason`, `discord_context_id`, `follow_up_*`, `checkpoint_root`, `artifact_root`, `artifact_paths`, `planned_branch`, `github_mutation_gate=closed`, `github_push_ready=false`, and `draft_pr_ready=false`.
+4. Let the local worker path move the task to `PendingReview`, then run `!approve <task_id>`. If finalization reports dry-run or retryable failure, confirm `approval_state=approved` and `finalize_requested_at` remain recorded.
+5. Run `!finalize <task_id>` only for retrying an already approved task. Run `!reject <task_id>` only before approval, and confirm rejected tasks do not request finalization.
+6. Run `!show <task_id>` and verify artifact inspection includes existing files under `$CANOPUS_STATE_PATH/artifacts/<run>` or `$CANOPUS_STATE_PATH/runs/<run>*.json`.
+7. Confirm no GitHub mutation happened: no `git push`, no draft PR URL, no merge/deploy output, and no payload field that marks `github_push_ready` or `draft_pr_ready` true.

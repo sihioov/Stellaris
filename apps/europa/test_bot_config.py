@@ -19,9 +19,11 @@ def load_bot(**env):
         "dotenv",
         "config",
         "canopus_client",
+        "instruction_router",
         "payloads",
         "projects_store",
         "tasks_store",
+        "v1_job_metadata",
     ]:
         sys.modules.pop(name, None)
 
@@ -121,6 +123,54 @@ def configure_project(bot, tmp, task):
 
 
 class DiscordBotConfigTests(unittest.TestCase):
+    def test_instruction_router_classifies_read_only_analysis(self):
+        bot = load_bot()
+
+        classification = bot.classify_instruction("look at the auth flow and explain the issue")
+
+        self.assertEqual(classification.intent, bot.READ_ONLY_ANALYSIS)
+        self.assertEqual(classification.reason, "read_only_analysis")
+
+    def test_instruction_router_classifies_code_change(self):
+        bot = load_bot()
+
+        classification = bot.classify_instruction("implement the retry button in europa")
+
+        self.assertEqual(classification.intent, bot.CODE_CHANGE)
+        self.assertEqual(classification.reason, "explicit_code_change")
+
+    def test_instruction_router_classifies_pr_review(self):
+        bot = load_bot()
+
+        classification = bot.classify_instruction("review PR #42 before merge")
+
+        self.assertEqual(classification.intent, bot.PR_REVIEW)
+        self.assertEqual(classification.reason, "pr_review_reference")
+
+    def test_instruction_router_classifies_ci_repair(self):
+        bot = load_bot()
+
+        classification = bot.classify_instruction("CI failed on the lint job, fix it")
+
+        self.assertEqual(classification.intent, bot.CI_REPAIR)
+        self.assertEqual(classification.reason, "ci_failure_repair")
+
+    def test_instruction_router_keeps_ambiguous_requests_non_mutating(self):
+        bot = load_bot()
+
+        classification = bot.classify_instruction("fix it")
+
+        self.assertEqual(classification.intent, bot.NEEDS_CLARIFICATION)
+        self.assertEqual(classification.reason, "objectless_command")
+
+    def test_instruction_router_requires_clarification_for_unknown_intent(self):
+        bot = load_bot()
+
+        classification = bot.classify_instruction("")
+
+        self.assertEqual(classification.intent, bot.NEEDS_CLARIFICATION)
+        self.assertEqual(classification.reason, "empty_request")
+
     def test_tasks_json_path_overrides_per_category_file(self):
         bot = load_bot(TASKS_JSON_PATH="/tmp/stellaris-tasks.json")
         self.assertEqual(bot.get_tasks_path(123), "/tmp/stellaris-tasks.json")
@@ -182,8 +232,131 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertEqual(payload["github_project_status_option_name"], "Ready")
         self.assertEqual(payload["github_project_mode"], "dry-run-offline")
         self.assertEqual(payload["discord_message_url"], "https://discord.com/channels/1/2/3")
+        self.assertEqual(payload["discord_parent_channel_id"], "2")
+        self.assertEqual(payload["discord_context_kind"], "message")
+        self.assertEqual(payload["discord_context_id"], "discord-message-1-2-3")
+        self.assertEqual(payload["follow_up_source"], "discord")
+        self.assertEqual(payload["follow_up_channel_id"], "2")
+        self.assertEqual(payload["follow_up_message_id"], "3")
+        self.assertEqual(payload["follow_up_message_url"], "https://discord.com/channels/1/2/3")
         self.assertEqual(payload["confirmation_state"], "requested")
+        self.assertEqual(payload["job_id"], "discord-abc123")
+        self.assertEqual(payload["job_status"], "classified")
+        self.assertEqual(payload["intent"], bot.NEEDS_CLARIFICATION)
+        self.assertEqual(payload["classification_reason"], "no_stable_intent_match")
+        self.assertEqual(payload["runner_backend"], "canopus")
+        self.assertEqual(payload["canopus_run_id"], "agenda-discord-abc123-discord-abc123")
+        self.assertEqual(payload["planned_branch"], "canopus/agenda-discord-abc123-discord-abc123")
+        self.assertEqual(payload["branch_source"], "canopus_run_id")
+        self.assertEqual(payload["branch_readiness"], "planned")
+        self.assertEqual(payload["canopus_mutation_owner"], "canopus")
+        self.assertEqual(payload["canopus_mutation_mode_projection"], "dry-run-offline")
+        self.assertEqual(payload["github_mutation_gate"], "closed")
+        self.assertFalse(payload["github_push_ready"])
+        self.assertFalse(payload["draft_pr_ready"])
+        self.assertEqual(payload["worktree_readiness"], "selected")
+        self.assertEqual(payload["worktree_name"], "default")
+        self.assertEqual(payload["worktree_repo_path"], "/repo")
+        self.assertEqual(payload["checkpoint_root"], "/repo/.canopus/checkpoints/agenda-discord-abc123-discord-abc123")
+        self.assertEqual(payload["artifact_root"], "/repo/.canopus/artifacts/agenda-discord-abc123-discord-abc123")
+        self.assertEqual(
+            payload["artifact_paths"],
+            {
+                "request": "/repo/.canopus/checkpoints/agenda-discord-abc123-discord-abc123/request.json",
+                "plan_checkpoint": "/repo/.canopus/checkpoints/agenda-discord-abc123-discord-abc123/plan-checkpoint.md",
+                "result": "/repo/.canopus/runs/agenda-discord-abc123-discord-abc123.json",
+                "test_log": "/repo/.canopus/artifacts/agenda-discord-abc123-discord-abc123/test.log",
+                "diff_summary": "/repo/.canopus/artifacts/agenda-discord-abc123-discord-abc123/diff-summary.md",
+                "finalize_result": "/repo/.canopus/runs/agenda-discord-abc123-discord-abc123-finalize.txt",
+                "delivery_gate": "/repo/.canopus/runs/agenda-discord-abc123-discord-abc123-delivery-gate.json",
+            },
+        )
 
+    def test_task_payload_records_real_discord_thread_context_when_available(self):
+        bot = load_bot()
+        ctx = types.SimpleNamespace(
+            guild=types.SimpleNamespace(id=1),
+            channel=types.SimpleNamespace(id=20, parent_id=2),
+            message=types.SimpleNamespace(id=3),
+            author=types.SimpleNamespace(id=4),
+        )
+
+        payload = bot.build_task_payload(
+            ctx,
+            "discord-abc123",
+            "review PR #42",
+            {"repo_path": "/repo"},
+            "canopus.reviewer",
+        )
+
+        self.assertEqual(payload["discord_thread_id"], "20")
+        self.assertEqual(payload["discord_parent_channel_id"], "2")
+        self.assertEqual(payload["discord_context_kind"], "thread")
+        self.assertEqual(payload["discord_context_id"], "discord-thread-20")
+        self.assertEqual(payload["follow_up_user_id"], "4")
+        self.assertEqual(payload["intent"], bot.PR_REVIEW)
+
+    def test_artifact_paths_include_payload_contract_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".canopus"
+            bot = load_bot(CANOPUS_STATE_PATH=str(state))
+            result_path = state / "runs" / "run-1.json"
+            outside_path = Path(tmp) / "outside.json"
+            result_path.parent.mkdir(parents=True)
+            result_path.write_text("{}", encoding="utf-8")
+            outside_path.write_text("{}", encoding="utf-8")
+            task = {
+                "task_id": "discord-1",
+                "payload": json.dumps(
+                    {
+                        "artifact_paths": {
+                            "result": str(result_path),
+                            "outside": str(outside_path),
+                        }
+                    }
+                ),
+            }
+
+            paths = bot._artifact_paths(None, task)
+
+            self.assertIn(str(result_path), paths)
+            self.assertNotIn(str(outside_path), paths)
+
+    def test_artifact_lookup_ids_cannot_escape_state_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".canopus"
+            outside = Path(tmp) / "outside-dir"
+            outside.mkdir()
+            (outside / "leak.txt").write_text("secret", encoding="utf-8")
+            bot = load_bot(CANOPUS_STATE_PATH=str(state))
+            task = {
+                "task_id": "discord-1",
+                "payload": json.dumps({"run_id": "../../outside-dir"}),
+            }
+
+            paths = bot._artifact_paths(None, task)
+
+            self.assertNotIn(str(outside / "leak.txt"), paths)
+
+    def test_artifact_lookup_rejects_symlink_escape_from_state_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".canopus"
+            outside = Path(tmp) / "outside-dir"
+            outside.mkdir()
+            (outside / "leak.txt").write_text("secret", encoding="utf-8")
+            artifact_root = state / "artifacts"
+            artifact_root.mkdir(parents=True)
+            (artifact_root / "run-1").symlink_to(outside, target_is_directory=True)
+            bot = load_bot(CANOPUS_STATE_PATH=str(state))
+            task = {
+                "task_id": "discord-1",
+                "payload": json.dumps({"run_id": "run-1"}),
+            }
+
+            paths = bot._artifact_paths(None, task)
+
+            self.assertNotIn(str(outside / "leak.txt"), paths)
+            self.assertEqual(paths, [])
 
     def test_task_payload_omits_mutating_project_mode_from_discord_metadata(self):
         bot = load_bot(
@@ -207,6 +380,10 @@ class DiscordBotConfigTests(unittest.TestCase):
         )
 
         self.assertNotIn("github_project_mode", payload)
+        self.assertEqual(payload["canopus_mutation_mode_projection"], "discord-v1-live-gate-closed")
+        self.assertEqual(payload["github_mutation_gate"], "closed")
+        self.assertFalse(payload["github_push_ready"])
+        self.assertFalse(payload["draft_pr_ready"])
         self.assertIsNone(payload.get("github_issue_number"))
         self.assertIsNone(payload.get("github_issue_url"))
 
@@ -243,6 +420,9 @@ class DiscordBotConfigTests(unittest.TestCase):
             "github_owner": "Acme",
             "github_repo": "Demo",
             "github_issue_number": 42,
+            "github_mutation_gate": "open",
+            "github_push_ready": True,
+            "draft_pr_ready": True,
         }
 
         payload = bot.build_task_payload(
@@ -257,6 +437,9 @@ class DiscordBotConfigTests(unittest.TestCase):
         # gh-{owner}-{repo}-{number} sanitised by run-identity rules (lowercase, dash-collapsed)
         self.assertEqual(payload["agenda_id"], "gh-acme-demo-42")
         self.assertEqual(payload["canopus_agenda_id"], "gh-acme-demo-42")
+        self.assertEqual(payload["github_mutation_gate"], "closed")
+        self.assertFalse(payload["github_push_ready"])
+        self.assertFalse(payload["draft_pr_ready"])
 
     def test_task_payload_keeps_legacy_agenda_id_without_issue_identity(self):
         bot = load_bot()
@@ -331,7 +514,16 @@ class DiscordBotConfigTests(unittest.TestCase):
             task = {
                 "task_id": "discord-1",
                 "task_type": {"Custom": "canopus.agent"},
-                "payload": json.dumps({"agenda_id": "agenda-discord-1", "approval_state": "pending"}),
+                "payload": json.dumps(
+                    {
+                        "agenda_id": "agenda-discord-1",
+                        "job_id": "discord-1",
+                        "intent": "CodeChange",
+                        "discord_context_id": "discord-message-1-2-3",
+                        "artifact_paths": {"result": "/repo/.canopus/runs/run.json"},
+                        "approval_state": "pending",
+                    }
+                ),
                 "meta": {"status": "PendingReview"},
             }
             tasks_path.write_text(json.dumps([task]), encoding="utf-8")
@@ -352,8 +544,40 @@ class DiscordBotConfigTests(unittest.TestCase):
             self.assertEqual(payload["approval_state"], "approved")
             self.assertEqual(payload["confirmation_state"], "approved")
             self.assertIsNotNone(payload["finalize_requested_at"])
+            self.assertEqual(payload.get("job_id"), "discord-1")
+            self.assertEqual(payload.get("intent"), "CodeChange")
+            self.assertEqual(payload.get("discord_context_id"), "discord-message-1-2-3")
+            self.assertEqual(payload.get("artifact_paths", {}).get("result"), "/repo/.canopus/runs/run.json")
             stored = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
             self.assertEqual(stored["meta"]["approval_state"], "approved")
+
+    def test_approval_and_rejection_preserve_v1_job_context(self):
+        bot = load_bot()
+        base_payload = {
+            "agenda_id": "agenda-discord-1",
+            "job_id": "discord-1",
+            "intent": "CodeChange",
+            "classification_reason": "explicit_code_change",
+            "discord_context_id": "discord-message-1-2-3",
+            "artifact_paths": {"result": "/repo/.canopus/runs/run.json"},
+            "approval_state": "pending",
+        }
+        approved = {"task_id": "discord-1", "payload": json.dumps(base_payload), "meta": {}}
+        rejected = {"task_id": "discord-1", "payload": json.dumps(base_payload), "meta": {}}
+
+        bot.mark_task_approved(approved)
+        bot.mark_task_rejected(rejected)
+
+        approved_payload = json.loads(approved["payload"])
+        rejected_payload = json.loads(rejected["payload"])
+        for payload in (approved_payload, rejected_payload):
+            self.assertEqual(payload["job_id"], "discord-1")
+            self.assertEqual(payload["intent"], "CodeChange")
+            self.assertEqual(payload["classification_reason"], "explicit_code_change")
+            self.assertEqual(payload["discord_context_id"], "discord-message-1-2-3")
+            self.assertEqual(payload["artifact_paths"]["result"], "/repo/.canopus/runs/run.json")
+        self.assertEqual(approved_payload["approval_state"], "approved")
+        self.assertEqual(rejected_payload["approval_state"], "rejected")
 
     def test_approval_hook_records_discord_provenance_when_provided(self):
         bot = load_bot()
@@ -389,6 +613,9 @@ class DiscordBotConfigTests(unittest.TestCase):
             "github_issue_number": 42,
             "github_issue_url": "https://github.test/acme/demo/issues/42",
             "github_project_item_id": "PVTI_1",
+            "github_mutation_gate": "open",
+            "github_push_ready": True,
+            "draft_pr_ready": True,
             "ignored": "not copied",
         }
 
@@ -399,6 +626,9 @@ class DiscordBotConfigTests(unittest.TestCase):
         self.assertIsNotNone(payload["proposal_intake_attempted_at"])
         self.assertEqual(payload["github_issue_number"], 42)
         self.assertEqual(payload["github_project_item_id"], "PVTI_1")
+        self.assertNotIn("github_mutation_gate", payload)
+        self.assertNotIn("github_push_ready", payload)
+        self.assertNotIn("draft_pr_ready", payload)
         self.assertNotIn("ignored", payload)
         self.assertEqual(task["meta"]["proposal_intake_state"], "succeeded")
 
@@ -900,6 +1130,43 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(any("#planning" in msg and "#development" in msg and "#review" in msg for msg in ctx.sent))
             self.assertFalse((Path(tmp) / "tasks.json").exists())
+
+    async def test_run_persists_v1_core_contract_without_live_github_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".canopus"
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot = load_bot(
+                CANOPUS_GITHUB_PROJECT_MODE="mutate-live",
+                CANOPUS_STATE_PATH=str(state),
+            )
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+            ctx = FakeCtx()
+            ctx.channel.name = "development"
+
+            await bot.cmd_run(ctx, request="implement status summary")
+
+            task = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            payload = json.loads(task["payload"])
+            self.assertEqual(task["meta"]["status"], "Pending")
+            self.assertEqual(task["meta"]["job_id"], payload["job_id"])
+            self.assertEqual(task["meta"]["intent"], bot.CODE_CHANGE)
+            self.assertEqual(payload["intent"], bot.CODE_CHANGE)
+            self.assertEqual(payload["job_status"], "classified")
+            self.assertEqual(payload["runner_backend"], "canopus")
+            self.assertEqual(payload["discord_context_id"], "discord-message-1-2-3")
+            self.assertEqual(payload["follow_up_user_id"], "4")
+            self.assertEqual(payload["artifact_root"], str(state / "artifacts" / payload["canopus_run_id"]))
+            self.assertEqual(payload["artifact_paths"]["finalize_result"], str(state / "runs" / f"{payload['canopus_run_id']}-finalize.txt"))
+            self.assertEqual(payload["canopus_mutation_mode_projection"], "discord-v1-live-gate-closed")
+            self.assertEqual(payload["github_mutation_gate"], "closed")
+            self.assertFalse(payload["github_push_ready"])
+            self.assertFalse(payload["draft_pr_ready"])
+            self.assertNotIn("github_project_mode", payload)
+            self.assertNotIn("github_issue_url", payload)
+            self.assertTrue(any("Task 추가됨" in msg for msg in ctx.sent))
 
     async def test_approve_persists_before_invoking_finalize_and_reports_commit(self):
         bot = load_bot()
@@ -1461,13 +1728,20 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             switch_ctx = Ctx()
             await bot.cmd_worktree(switch_ctx, action="switch", name="smoke")
             run_ctx = Ctx()
-            await bot.cmd_run(run_ctx, request="touch smoke")
+            await bot.cmd_run(run_ctx, request="update smoke file")
 
             stored_project = bot.read_projects()["projects"]["10"]
             self.assertEqual(stored_project["repo_path"], str(smoke))
             task = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
             payload = json.loads(task["payload"])
             self.assertEqual(payload["repo_path"], str(smoke))
+            self.assertEqual(payload["worktree_name"], "smoke")
+            self.assertEqual(payload["worktree_repo_path"], str(smoke))
+            self.assertEqual(payload["worktree_readiness"], "selected")
+            self.assertEqual(task["meta"]["job_id"], payload["job_id"])
+            self.assertEqual(task["meta"]["job_status"], "classified")
+            self.assertEqual(task["meta"]["intent"], bot.CODE_CHANGE)
+            self.assertEqual(task["meta"]["classification_reason"], "explicit_code_change")
             self.assertIn("active worktree 변경됨", switch_ctx.sent[0])
 
     async def test_show_includes_discord_identity_and_finalize_artifacts(self):

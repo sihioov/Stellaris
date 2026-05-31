@@ -66,6 +66,14 @@ from config import (
     get_channel_type,
     is_authorized,
 )
+from instruction_router import (
+    CI_REPAIR,
+    CODE_CHANGE,
+    NEEDS_CLARIFICATION,
+    PR_REVIEW,
+    READ_ONLY_ANALYSIS,
+    classify_instruction,
+)
 from payloads import (
     _artifact_lookup_ids,
     _artifact_paths,
@@ -776,6 +784,10 @@ async def cmd_run(ctx, *, request: str = None):
             "created_at": ts,
             "updated_at": ts,
             "agenda_id": payload["agenda_id"],
+            "job_id": payload["job_id"],
+            "job_status": payload["job_status"],
+            "intent": payload["intent"],
+            "classification_reason": payload["classification_reason"],
             "confirmation_state": payload["confirmation_state"],
             "approval_state": payload["approval_state"],
         },

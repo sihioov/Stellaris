@@ -11,7 +11,7 @@ from config import (
     CANOPUS_COMMAND,
     CANOPUS_STATE_PATH,
 )
-from payloads import _payload_data, now_iso, truncate_text
+from payloads import _payload_data, github_intake_payload_data, now_iso, truncate_text
 
 
 async def run_canopus_json(args: list[str]) -> tuple[dict | None, str | None]:
@@ -119,7 +119,7 @@ def mark_proposal_intake_failed(task: dict, error: str) -> None:
 def promote_pending_proposal_with_intake(task: dict, intake: dict | None) -> None:
     payload = _payload_data(task)
     if intake:
-        payload.update({k: v for k, v in intake.items() if k.startswith("github_") and v is not None})
+        payload.update(github_intake_payload_data(intake))
         payload["proposal_intake_state"] = "succeeded"
         payload["proposal_intake_attempted_at"] = now_iso()
     task["payload"] = json.dumps(payload, ensure_ascii=False)

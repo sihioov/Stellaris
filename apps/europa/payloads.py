@@ -20,6 +20,7 @@ from config import (
     GITHUB_REPO,
     NON_MUTATING_GITHUB_PROJECT_MODES,
 )
+from v1_job_metadata import build_v1_job_metadata
 
 
 def now_iso() -> str:
@@ -144,10 +145,120 @@ def canopus_github_project_mode_metadata() -> str | None:
     return None
 
 
+GITHUB_INTAKE_PAYLOAD_KEYS = frozenset(
+    {
+        "github_owner",
+        "github_repo",
+        "github_repo_slug",
+        "github_issue_number",
+        "github_issue_url",
+        "github_issue_create_url",
+        "github_project_id",
+        "github_project_url",
+        "github_project_item_id",
+        "github_project_status",
+        "github_project_owner_kind",
+        "github_project_owner",
+        "github_project_number",
+        "github_project_status_field_id",
+        "github_project_status_field_name",
+        "github_project_status_option_id",
+        "github_project_status_option_name",
+    }
+)
+
+
+def github_intake_payload_data(intake: dict) -> dict:
+    return {
+        key: value
+        for key, value in intake.items()
+        if key in GITHUB_INTAKE_PAYLOAD_KEYS and value is not None
+    }
+
+
 def build_discord_message_link(ctx) -> str | None:
     if not getattr(ctx, "guild", None):
         return None
     return f"https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{ctx.message.id}"
+
+
+def _id_str(value) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _discord_thread_id(ctx) -> str | None:
+    channel = getattr(ctx, "channel", None)
+    if not channel:
+        return None
+    if getattr(channel, "parent_id", None) is not None or getattr(channel, "parent", None) is not None:
+        return _id_str(getattr(channel, "id", None))
+    return None
+
+
+def build_discord_context_metadata(ctx) -> dict:
+    guild_id = _id_str(getattr(getattr(ctx, "guild", None), "id", None))
+    channel = getattr(ctx, "channel", None)
+    message = getattr(ctx, "message", None)
+    channel_id = _id_str(getattr(channel, "id", None))
+    message_id = _id_str(getattr(message, "id", None))
+    thread_id = _discord_thread_id(ctx)
+    parent_channel_id = _id_str(getattr(channel, "parent_id", None))
+    if parent_channel_id is None:
+        parent_channel_id = _id_str(getattr(getattr(channel, "parent", None), "id", None))
+    if parent_channel_id is None:
+        parent_channel_id = channel_id
+
+    context_kind = "thread" if thread_id else "message"
+    if thread_id:
+        context_id = f"discord-thread-{thread_id}"
+    else:
+        context_id = f"discord-message-{guild_id or 'dm'}-{channel_id or 'unknown'}-{message_id or 'unknown'}"
+
+    return {
+        "discord_thread_id": thread_id,
+        "discord_parent_channel_id": parent_channel_id,
+        "discord_context_kind": context_kind,
+        "discord_context_id": context_id,
+    }
+
+
+def build_follow_up_attribution(ctx) -> dict:
+    return {
+        "follow_up_source": "discord",
+        "follow_up_user_id": _id_str(getattr(getattr(ctx, "author", None), "id", None)),
+        "follow_up_channel_id": _id_str(getattr(getattr(ctx, "channel", None), "id", None)),
+        "follow_up_message_id": _id_str(getattr(getattr(ctx, "message", None), "id", None)),
+        "follow_up_message_url": build_discord_message_link(ctx),
+    }
+
+
+def canopus_state_root_for_project(project: dict) -> str | None:
+    if CANOPUS_STATE_PATH:
+        return CANOPUS_STATE_PATH
+    repo_path = project.get("repo_path")
+    if repo_path:
+        return os.path.join(repo_path, ".canopus")
+    return None
+
+
+def canopus_run_id_for_task(agenda_id: str, task_id: str) -> str:
+    return _sanitize_run_identity(f"{agenda_id}-{task_id}")
+
+
+def _job_metadata(task_id: str, agenda_id: str, request: str, project: dict) -> dict:
+    state_root = canopus_state_root_for_project(project)
+    run_id = canopus_run_id_for_task(agenda_id, task_id)
+    return build_v1_job_metadata(
+        task_id=task_id,
+        agenda_id=agenda_id,
+        run_id=run_id,
+        request=request,
+        project=project,
+        state_root=state_root,
+        github_project_mode=canopus_github_project_mode_metadata(),
+    )
 
 
 def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str, work_intake: dict | None = None) -> dict:
@@ -191,8 +302,11 @@ def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_t
         "rejected_at": None,
         "finalize_requested_at": None,
     }
+    payload.update(build_discord_context_metadata(ctx))
+    payload.update(build_follow_up_attribution(ctx))
+    payload.update(_job_metadata(task_id, agenda_id, request, project))
     if work_intake:
-        payload.update({k: v for k, v in work_intake.items() if k.startswith("github_") and v is not None})
+        payload.update(github_intake_payload_data(work_intake))
     return {k: v for k, v in payload.items() if v is not None}
 
 
@@ -243,32 +357,51 @@ def _artifact_lookup_ids(task: dict, payload: dict) -> list[str]:
 
 
 def _artifact_paths(project: dict | None, task: dict) -> list[str]:
-    state_root = CANOPUS_STATE_PATH
-    if not state_root and project:
-        state_root = os.path.join(project.get("repo_path", ""), ".canopus")
-    if not state_root:
-        return []
-
     payload = _payload_data(task)
     candidates = []
-    for lookup_id in _artifact_lookup_ids(task, payload):
-        candidates.extend([
-            os.path.join(state_root, "artifacts", lookup_id),
-            os.path.join(state_root, "runs", f"{lookup_id}.json"),
-            os.path.join(state_root, "runs", f"{lookup_id}-finalize.txt"),
-            os.path.join(state_root, "runs", f"{lookup_id}-delivery-gate.json"),
-        ])
+    state_root = CANOPUS_STATE_PATH
+    if not state_root and project:
+        state_root = canopus_state_root_for_project(project)
+    if state_root:
+        for lookup_id in _artifact_lookup_ids(task, payload):
+            for path in (
+                os.path.join(state_root, "artifacts", lookup_id),
+                os.path.join(state_root, "runs", f"{lookup_id}.json"),
+                os.path.join(state_root, "runs", f"{lookup_id}-finalize.txt"),
+                os.path.join(state_root, "runs", f"{lookup_id}-delivery-gate.json"),
+            ):
+                if _path_under_root(path, state_root):
+                    candidates.append(path)
+    payload_artifact_paths = payload.get("artifact_paths")
+    if isinstance(payload_artifact_paths, dict):
+        for path in payload_artifact_paths.values():
+            if (
+                isinstance(path, str)
+                and _path_under_root(path, state_root)
+                and path not in candidates
+            ):
+                candidates.append(path)
     found = []
     for path in candidates:
         if os.path.isdir(path):
             for root, _, files in os.walk(path):
                 for name in files:
                     found_path = os.path.join(root, name)
-                    if found_path not in found:
+                    if _path_under_root(found_path, state_root) and found_path not in found:
                         found.append(found_path)
-        elif os.path.exists(path) and path not in found:
+        elif os.path.exists(path) and _path_under_root(path, state_root) and path not in found:
             found.append(path)
     return found[:10]
+
+
+def _path_under_root(path: str, root: str | None) -> bool:
+    if not root:
+        return False
+    try:
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([os.path.realpath(path), real_root]) == real_root
+    except ValueError:
+        return False
 
 
 def mark_task_approved(task: dict, approved_by: str | None = None, approval_source: str | None = None, approval_message_url: str | None = None) -> None:
