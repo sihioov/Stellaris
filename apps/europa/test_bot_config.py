@@ -39,6 +39,7 @@ def load_bot(**env):
 
     discord.Intents = Intents
     discord.Forbidden = type("Forbidden", (Exception,), {})
+    discord.HTTPException = type("HTTPException", (Exception,), {})
     discord.utils = types.SimpleNamespace(get=lambda items, **kwargs: None)
 
     ext = types.ModuleType("discord.ext")
@@ -1167,6 +1168,78 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("github_project_mode", payload)
             self.assertNotIn("github_issue_url", payload)
             self.assertTrue(any("Task 추가됨" in msg for msg in ctx.sent))
+
+    async def test_run_creates_discord_task_thread_and_persists_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot = load_bot()
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+
+            class Thread:
+                id = 99
+                parent_id = 2
+                mention = "<#99>"
+
+                def __init__(self):
+                    self.sent = []
+
+                async def send(self, message):
+                    self.sent.append(message)
+
+            thread = Thread()
+
+            class Message:
+                id = 3
+
+                async def create_thread(self, **kwargs):
+                    self.thread_kwargs = kwargs
+                    return thread
+
+            ctx = FakeCtx()
+            ctx.message = Message()
+
+            await bot.cmd_run(ctx, request="implement status summary")
+
+            task = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            payload = json.loads(task["payload"])
+            self.assertEqual(payload["discord_thread_id"], "99")
+            self.assertEqual(payload["discord_parent_channel_id"], "2")
+            self.assertEqual(payload["discord_context_kind"], "thread")
+            self.assertEqual(payload["discord_context_id"], "discord-thread-99")
+            self.assertEqual(task["meta"]["discord_thread_id"], "99")
+            self.assertEqual(task["meta"]["discord_context_id"], "discord-thread-99")
+            self.assertTrue(any("Thread" in msg and "<#99>" in msg for msg in ctx.sent))
+            self.assertTrue(any("Job session 생성됨" in msg for msg in thread.sent))
+
+    async def test_run_continues_when_discord_task_thread_creation_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot = load_bot()
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+
+            class Message:
+                id = 3
+
+                async def create_thread(self, **kwargs):
+                    raise bot.discord.Forbidden("missing permissions")
+
+            ctx = FakeCtx()
+            ctx.message = Message()
+
+            await bot.cmd_run(ctx, request="implement status summary")
+
+            task = json.loads(tasks_path.read_text(encoding="utf-8"))[0]
+            payload = json.loads(task["payload"])
+            self.assertEqual(payload["discord_context_kind"], "message")
+            self.assertNotIn("discord_thread_id", payload)
+            self.assertNotIn("discord_thread_id", task["meta"])
+            self.assertTrue(any("thread를 만들지 못했습니다" in msg for msg in ctx.sent))
 
     async def test_approve_persists_before_invoking_finalize_and_reports_commit(self):
         bot = load_bot()

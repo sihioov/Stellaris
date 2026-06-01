@@ -142,6 +142,48 @@ BRAINSTORMER_STYLE_INSTRUCTION = (
 )
 
 
+def _is_discord_thread_channel(channel) -> bool:
+    return bool(getattr(channel, "parent_id", None) is not None or getattr(channel, "parent", None) is not None)
+
+
+def _task_thread_name(task_id: str, request: str) -> str:
+    title = truncate_text(" ".join((request or "").split()), 70)
+    return truncate_text(f"{task_id} {title}", 100)
+
+
+def _discord_thread_creation_exceptions() -> tuple[type[BaseException], ...]:
+    exceptions = [AttributeError, TypeError]
+    for name in ("Forbidden", "HTTPException"):
+        exc = getattr(discord, name, None)
+        if isinstance(exc, type) and issubclass(exc, BaseException):
+            exceptions.append(exc)
+    return tuple(exceptions)
+
+
+async def create_task_thread(ctx, task_id: str, request: str):
+    """Create or reuse the Discord thread that represents this job session."""
+    channel = getattr(ctx, "channel", None)
+    message = getattr(ctx, "message", None)
+    if channel is None or getattr(ctx, "guild", None) is None:
+        return None, None
+    if _is_discord_thread_channel(channel):
+        return channel, None
+
+    name = _task_thread_name(task_id, request)
+    try:
+        create_from_message = getattr(message, "create_thread", None)
+        if callable(create_from_message):
+            return await create_from_message(name=name, auto_archive_duration=1440), None
+
+        create_from_channel = getattr(channel, "create_thread", None)
+        if callable(create_from_channel):
+            return await create_from_channel(name=name, message=message, auto_archive_duration=1440), None
+    except _discord_thread_creation_exceptions() as exc:
+        return None, str(exc) or exc.__class__.__name__
+
+    return None, "thread_creation_unavailable"
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def get_category_context(ctx):
@@ -774,38 +816,57 @@ async def cmd_run(ctx, *, request: str = None):
         else:
             await ctx.send(f"❌ GitHub work-intake 실패: {intake_error}")
             return
-    payload = build_task_payload(ctx, task_id, request, project, channel_type, work_intake)
+
+    task_thread, thread_error = await create_task_thread(ctx, task_id, request)
+    payload = build_task_payload(ctx, task_id, request, project, channel_type, work_intake, task_thread=task_thread)
+    meta = {
+        "status": "Pending",
+        "created_at": ts,
+        "updated_at": ts,
+        "agenda_id": payload["agenda_id"],
+        "job_id": payload["job_id"],
+        "job_status": payload["job_status"],
+        "intent": payload["intent"],
+        "classification_reason": payload["classification_reason"],
+        "confirmation_state": payload["confirmation_state"],
+        "approval_state": payload["approval_state"],
+        "discord_context_id": payload["discord_context_id"],
+    }
+    if payload.get("discord_thread_id"):
+        meta["discord_thread_id"] = payload["discord_thread_id"]
     task = {
         "task_id": task_id,
         "task_type": {"Custom": channel_type},
         "payload": json.dumps(payload, ensure_ascii=False),
-        "meta": {
-            "status": "Pending",
-            "created_at": ts,
-            "updated_at": ts,
-            "agenda_id": payload["agenda_id"],
-            "job_id": payload["job_id"],
-            "job_status": payload["job_status"],
-            "intent": payload["intent"],
-            "classification_reason": payload["classification_reason"],
-            "confirmation_state": payload["confirmation_state"],
-            "approval_state": payload["approval_state"],
-        },
+        "meta": meta,
     }
     append_task_locked(tasks_path, task)
 
     type_label = {"canopus.planner": "📋 Planning", "canopus.agent": "🔄 Full Pipeline", "canopus.reviewer": "🔍 Review"}.get(channel_type, channel_type)
+    thread_label = getattr(task_thread, "mention", None) or (f"<#{payload['discord_thread_id']}>" if payload.get("discord_thread_id") else None)
+    thread_line = f"**Thread**: {thread_label}\n" if thread_label else "**Thread**: 생성되지 않음\n"
     await ctx.send(
         f"✅ **Task 추가됨**\n"
         f"**ID**: `{task_id}`\n"
         f"**프로젝트**: {project['name']}\n"
         f"**타입**: {type_label}\n"
+        f"{thread_line}"
         f"**요청**: {request}\n"
         f"**Agenda**: `{payload['agenda_id']}`\n"
         f"**GitHub Issue**: {payload.get('github_issue_url') or payload.get('github_issue_create_url') or '(not configured)'}\n"
         f"**Project**: {payload.get('github_project_url') or payload.get('github_project_id') or '(not configured)'}\n"
         f"**Status**: Pending"
     )
+    if task_thread is not None and callable(getattr(task_thread, "send", None)):
+        await task_thread.send(
+            f"✅ **Job session 생성됨**\n"
+            f"**ID**: `{task_id}`\n"
+            f"**Intent**: `{payload['intent']}`\n"
+            f"**요청**: {request}\n"
+            f"이 thread의 후속 대화는 `{task_id}` 작업 context로 이어질 수 있습니다."
+        )
+    elif thread_error:
+        await ctx.send(f"⚠️ Discord thread를 만들지 못했습니다. Task는 thread 없이 생성됐습니다: `{thread_error}`")
 
 
 

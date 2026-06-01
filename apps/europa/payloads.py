@@ -197,18 +197,26 @@ def _discord_thread_id(ctx) -> str | None:
     return None
 
 
-def build_discord_context_metadata(ctx) -> dict:
+def build_discord_context_metadata(ctx, task_thread=None) -> dict:
     guild_id = _id_str(getattr(getattr(ctx, "guild", None), "id", None))
     channel = getattr(ctx, "channel", None)
     message = getattr(ctx, "message", None)
     channel_id = _id_str(getattr(channel, "id", None))
     message_id = _id_str(getattr(message, "id", None))
-    thread_id = _discord_thread_id(ctx)
-    parent_channel_id = _id_str(getattr(channel, "parent_id", None))
-    if parent_channel_id is None:
-        parent_channel_id = _id_str(getattr(getattr(channel, "parent", None), "id", None))
-    if parent_channel_id is None:
-        parent_channel_id = channel_id
+    if task_thread is not None:
+        thread_id = _id_str(getattr(task_thread, "id", None))
+        parent_channel_id = _id_str(getattr(task_thread, "parent_id", None))
+        if parent_channel_id is None:
+            parent_channel_id = _id_str(getattr(getattr(task_thread, "parent", None), "id", None))
+        if parent_channel_id is None:
+            parent_channel_id = channel_id
+    else:
+        thread_id = _discord_thread_id(ctx)
+        parent_channel_id = _id_str(getattr(channel, "parent_id", None))
+        if parent_channel_id is None:
+            parent_channel_id = _id_str(getattr(getattr(channel, "parent", None), "id", None))
+        if parent_channel_id is None:
+            parent_channel_id = channel_id
 
     context_kind = "thread" if thread_id else "message"
     if thread_id:
@@ -261,7 +269,15 @@ def _job_metadata(task_id: str, agenda_id: str, request: str, project: dict) -> 
     )
 
 
-def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_type: str, work_intake: dict | None = None) -> dict:
+def build_task_payload(
+    ctx,
+    task_id: str,
+    request: str,
+    project: dict,
+    channel_type: str,
+    work_intake: dict | None = None,
+    task_thread=None,
+) -> dict:
     agenda_id = resolve_agenda_id(task_id, work_intake, project)
     title = truncate_text(request.replace("\n", " "), 90)
     payload = {
@@ -302,7 +318,7 @@ def build_task_payload(ctx, task_id: str, request: str, project: dict, channel_t
         "rejected_at": None,
         "finalize_requested_at": None,
     }
-    payload.update(build_discord_context_metadata(ctx))
+    payload.update(build_discord_context_metadata(ctx, task_thread=task_thread))
     payload.update(build_follow_up_attribution(ctx))
     payload.update(_job_metadata(task_id, agenda_id, request, project))
     if work_intake:
