@@ -675,6 +675,14 @@ class DiscordBotConfigTests(unittest.TestCase):
             "/tmp/europa-projects/demo",
         )
 
+    def test_default_new_project_path_uses_home_project_when_unconfigured(self):
+        bot = load_bot(HOME="/tmp/europa-home")
+
+        self.assertEqual(
+            bot.default_new_project_repo_path("demo"),
+            "/tmp/europa-home/project/demo",
+        )
+
     def test_default_new_project_path_rejects_path_escape_names(self):
         bot = load_bot(NEW_PROJECT_DEFAULT_ROOT="/tmp/europa-projects")
 

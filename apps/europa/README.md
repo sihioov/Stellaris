@@ -8,7 +8,7 @@ policy logic here; route mutation to canopus. See
 
 | Command | Description |
 |---------|-------------|
-| `!new-project <name> [path]` | Create a project directory, run `git init`, create Discord category/channels, and register it. When `path` is omitted, uses `NEW_PROJECT_DEFAULT_ROOT/<name>` (`/home/sihioov/project/<name>` by default). |
+| `!new-project <name> [path]` | Create a project directory, run `git init`, create Discord category/channels, and register it. When `path` is omitted, uses `NEW_PROJECT_DEFAULT_ROOT/<name>` (`~/project/<name>` by default). |
 | `!ask <question>` | Ask a direct question without creating a pipeline task |
 | `!analyze <topic>` | In `#analysis`, ask an analyst-style project-local question without creating a task |
 | `!brainstorm <topic>` | In `#brainstorming`, ask for project-local brainstorming without creating a task |
@@ -49,7 +49,7 @@ python europa.py
 | `DISCORD_BOT_TOKEN` | *(required)* | Your Discord bot token |
 | `TASKS_JSON_PATH` | *(empty)* | Explicit shared task file path. Set this to the same `tasks.json` watched by TON618/Laniakea for the v1 operator path. |
 | `TASKS_DIR` | bot directory | Fallback directory for per-project `tasks-<category_id>.json` files when `TASKS_JSON_PATH` is unset |
-| `NEW_PROJECT_DEFAULT_ROOT` | `/home/sihioov/project` | Parent directory used by `!new-project <name>` when the path argument is omitted |
+| `NEW_PROJECT_DEFAULT_ROOT` | `~/project` | Parent directory used by `!new-project <name>` when the path argument is omitted |
 | `ALLOWED_USER_IDS` | *(empty)* | Comma-separated Discord user IDs permitted to use commands; empty = all users allowed in dev mode |
 | `CANOPUS_STATE_PATH` | `<repo>/.canopus` | Optional state root used by `!show` when listing artifacts |
 | `ASK_COMMAND` | *(empty)* | Optional direct-answer backend for `!ask`, `!analyze`, and `!brainstorm`; receives the prompt on stdin and in `STELLARIS_ASK_PROMPT` |
