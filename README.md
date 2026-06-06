@@ -152,6 +152,15 @@ cargo build
 
 # TON618 모듈 단독 실행
 cargo run -p ton618
+
+# tmux에서 TON618, Laniakea, Europa 순차 실행
+./start-pipeline.sh
+
+# tmux로 실행한 파이프라인 종료
+./shutdown-pipeline.sh
+
+# 실제 프로세스를 띄우지 않고 tmux 실행 계획만 확인
+./start-pipeline.sh --dry-run
 ```
 
 ## 📝 개발 현황 및 계획
