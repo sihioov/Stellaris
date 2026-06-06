@@ -683,6 +683,12 @@ class DiscordBotConfigTests(unittest.TestCase):
             "/tmp/europa-home/project/demo",
         )
 
+    def test_normalize_repo_path_expands_relative_paths(self):
+        bot = load_bot()
+
+        self.assertEqual(bot.normalize_repo_path("demo"), os.path.abspath("demo"))
+        self.assertTrue(os.path.isabs(bot.normalize_repo_path("demo")))
+
     def test_default_new_project_path_rejects_path_escape_names(self):
         bot = load_bot(NEW_PROJECT_DEFAULT_ROOT="/tmp/europa-projects")
 
@@ -1221,6 +1227,104 @@ class DiscordBotGitHubBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(task["meta"]["discord_context_id"], "discord-thread-99")
             self.assertTrue(any("Thread" in msg and "<#99>" in msg for msg in ctx.sent))
             self.assertTrue(any("Job session 생성됨" in msg for msg in thread.sent))
+
+    async def test_status_filters_shared_tasks_to_current_parent_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot = load_bot()
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo/current"}}})
+
+            def task(task_id, repo_path, channel_id, *, parent_channel_id=None, thread_id=None):
+                payload = {
+                    "request": task_id,
+                    "repo_path": repo_path,
+                    "discord_channel_id": str(channel_id),
+                    "discord_parent_channel_id": str(parent_channel_id or channel_id),
+                }
+                if thread_id:
+                    payload["discord_thread_id"] = str(thread_id)
+                return {
+                    "task_id": task_id,
+                    "payload": json.dumps(payload),
+                    "meta": {"status": "Failed" if task_id == "other-channel" else "Pending"},
+                }
+
+            tasks_path.write_text(
+                json.dumps(
+                    [
+                        task("current-message", "/repo/current", 2),
+                        task("current-thread", "/repo/current", 2, parent_channel_id=2, thread_id=99),
+                        task("other-channel", "/repo/current", 3),
+                        task("other-repo", "/repo/other", 2),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ctx = FakeCtx()
+
+            await bot.cmd_status(ctx)
+
+            message = ctx.sent[0]
+            self.assertIn("current-message", message)
+            self.assertIn("current-thread", message)
+            self.assertNotIn("other-channel", message)
+            self.assertNotIn("other-repo", message)
+            self.assertNotIn("[Failed]", message)
+
+    async def test_status_in_thread_shows_only_that_thread_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = Path(tmp) / "tasks.json"
+            projects_path = Path(tmp) / "projects.json"
+            bot = load_bot()
+            bot._projects_store.PROJECTS_JSON_PATH = str(projects_path)
+            bot._projects_store.TASKS_JSON_PATH = str(tasks_path)
+            bot.write_projects({"projects": {"10": {"name": "demo", "repo_path": "/repo"}}})
+            tasks_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "task_id": "thread-99",
+                            "payload": json.dumps(
+                                {
+                                    "request": "inside current thread",
+                                    "repo_path": "/repo",
+                                    "discord_channel_id": "2",
+                                    "discord_parent_channel_id": "2",
+                                    "discord_thread_id": "99",
+                                }
+                            ),
+                            "meta": {"status": "Pending", "discord_thread_id": "99"},
+                        },
+                        {
+                            "task_id": "thread-100",
+                            "payload": json.dumps(
+                                {
+                                    "request": "inside another thread",
+                                    "repo_path": "/repo",
+                                    "discord_channel_id": "2",
+                                    "discord_parent_channel_id": "2",
+                                    "discord_thread_id": "100",
+                                }
+                            ),
+                            "meta": {"status": "Failed", "discord_thread_id": "100"},
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            parent = types.SimpleNamespace(id=2, category=types.SimpleNamespace(id=10))
+            ctx = FakeCtx()
+            ctx.channel = types.SimpleNamespace(id=99, name="discord-1", parent_id=2, parent=parent)
+
+            await bot.cmd_status(ctx)
+
+            message = ctx.sent[0]
+            self.assertIn("thread-99", message)
+            self.assertNotIn("thread-100", message)
+            self.assertNotIn("[Failed]", message)
 
     async def test_run_continues_when_discord_task_thread_creation_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

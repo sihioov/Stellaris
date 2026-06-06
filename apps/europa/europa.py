@@ -188,9 +188,14 @@ async def create_task_thread(ctx, task_id: str, request: str):
 
 def get_category_context(ctx):
     """Returns (category_id, project, tasks_path) or (None, None, None) if not in a project channel."""
-    if not ctx.guild or not hasattr(ctx.channel, "category") or not ctx.channel.category:
+    if not ctx.guild:
         return None, None, None
-    category_id = ctx.channel.category.id
+    category = getattr(ctx.channel, "category", None)
+    if not category:
+        category = getattr(getattr(ctx.channel, "parent", None), "category", None)
+    if not category:
+        return None, None, None
+    category_id = category.id
     project = get_project(category_id)
     tasks_path = get_tasks_path(category_id)
     return category_id, project, tasks_path
@@ -390,6 +395,13 @@ async def on_ready():
         print("[europa] WARNING: ALLOWED_USER_IDS not set — all users can run commands")
 
 
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    raise error
+
+
 def is_git_repo_path(repo_path: str) -> bool:
     """Return true for normal Git repos and linked git worktrees."""
     if not os.path.isdir(repo_path):
@@ -443,6 +455,35 @@ def default_new_project_repo_path(name: str) -> str:
             f"프로젝트 이름으로 기본 경로 밖을 가리킬 수 없습니다: `{project_name}`"
         )
     return repo_path
+
+
+def normalize_repo_path(repo_path: str) -> str:
+    return os.path.abspath(os.path.expanduser(repo_path))
+
+
+def task_matches_status_context(task: dict, ctx, project: dict) -> bool:
+    payload = _payload_data(task)
+    project_repo = project.get("repo_path")
+    task_repo = payload.get("repo_path") or payload.get("worktree_repo_path")
+    if project_repo and task_repo and normalize_repo_path(task_repo) != normalize_repo_path(project_repo):
+        return False
+
+    channel = getattr(ctx, "channel", None)
+    channel_id = str(getattr(channel, "id", "")) if channel is not None else ""
+    if not channel_id:
+        return False
+
+    current_is_thread = _is_discord_thread_channel(channel)
+    task_thread_id = str(payload.get("discord_thread_id") or task.get("meta", {}).get("discord_thread_id") or "")
+    task_parent_channel_id = str(payload.get("discord_parent_channel_id") or "")
+    task_channel_id = str(payload.get("discord_channel_id") or "")
+
+    if current_is_thread:
+        return task_thread_id == channel_id
+
+    if task_parent_channel_id:
+        return task_parent_channel_id == channel_id
+    return task_channel_id == channel_id and not task_thread_id
 
 
 def worktree_status_text(repo_path: str) -> str:
@@ -583,6 +624,8 @@ async def cmd_new_project(ctx, name: str = None, *, repo_path: str = None):
         except ValueError as exc:
             await ctx.send(f"⚠️ {exc}")
             return
+    else:
+        repo_path = normalize_repo_path(repo_path)
     if not ctx.guild:
         await ctx.send("⚠️ 서버 채널에서만 사용할 수 있습니다.")
         return
@@ -686,6 +729,7 @@ async def cmd_register(ctx, *, repo_path: str = None):
     if parse_error:
         await ctx.send(f"⚠️ {parse_error}")
         return
+    repo_path = normalize_repo_path(repo_path)
     if not os.path.isdir(repo_path):
         await ctx.send(f"❌ 경로가 존재하지 않습니다: `{repo_path}`\n신규 프로젝트라면 `!new-project <이름> [경로]` 를 사용하세요.")
         return
@@ -1207,12 +1251,12 @@ async def cmd_status(ctx):
         await ctx.send("⚠️ 등록된 프로젝트 채널에서만 사용할 수 있습니다.")
         return
 
-    tasks = read_tasks(tasks_path)
+    tasks = [t for t in read_tasks(tasks_path) if task_matches_status_context(t, ctx, project)]
     if not tasks:
-        await ctx.send(f"📋 **{project['name']}** — 태스크 없음")
+        await ctx.send(f"📋 **{project['name']}** — 현재 채널 태스크 없음")
         return
 
-    lines = [f"📋 **{project['name']} Task Queue**"]
+    lines = [f"📋 **{project['name']} Task Queue** — 현재 채널"]
     for t in tasks:
         status = t.get("meta", {}).get("status", "Unknown")
         task_id = t.get("task_id", "?")
