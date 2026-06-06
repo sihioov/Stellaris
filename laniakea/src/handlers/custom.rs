@@ -358,7 +358,11 @@ async fn run_canopus(task: &TaskMessage, role_mode: CanopusRoleMode) -> Result<(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(3600);
 
-    notify_discord(&format!("🚀 **작업 시작**: {}", task.payload));
+    notify_discord(&format!(
+        "🚀 **작업 시작** `task_id={}`\n{}",
+        task.task_id,
+        truncate_discord_text(&task.payload, 1200)
+    ));
     log::info!(
         "[Canopus] Starting for task {} ({:?}): {}",
         task.task_id,
@@ -367,7 +371,11 @@ async fn run_canopus(task: &TaskMessage, role_mode: CanopusRoleMode) -> Result<(
     );
 
     let args = canopus_submit_args(task, &repo, &state, role_mode);
-    let cmd_future = Command::new("canopus").args(args).output();
+    let canopus_argv = canopus_command_argv();
+    let (program, configured_args) = canopus_argv.split_first().ok_or_else(|| {
+        StellarisError::IoError("CANOPUS_COMMAND resolved to an empty command".to_string())
+    })?;
+    let cmd_future = Command::new(program).args(configured_args).args(args).output();
 
     let output = match tokio::time::timeout(Duration::from_secs(timeout_secs), cmd_future).await {
         Err(_) => {
@@ -418,9 +426,25 @@ async fn run_canopus(task: &TaskMessage, role_mode: CanopusRoleMode) -> Result<(
     }
 }
 
+fn canopus_command_argv() -> Vec<String> {
+    std::env::var("CANOPUS_COMMAND")
+        .ok()
+        .map(|value| parse_command_words(&value))
+        .filter(|argv| !argv.is_empty())
+        .unwrap_or_else(|| vec!["canopus".to_string()])
+}
+
+fn parse_command_words(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .filter(|word| !word.trim().is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn notify_discord(message: &str) {
     if let Ok(url) = std::env::var("DISCORD_WEBHOOK_URL") {
-        let body = serde_json::json!({"content": message});
+        let body = serde_json::json!({"content": truncate_discord_text(message, 1900)});
         // fire-and-forget: ureq is sync, spawn_blocking avoids blocking the async executor
         tokio::task::spawn_blocking(move || {
             if let Err(e) = ureq::post(&url).send_json(body) {
@@ -428,6 +452,15 @@ fn notify_discord(message: &str) {
             }
         });
     }
+}
+
+fn truncate_discord_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated = text.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 #[cfg(test)]
@@ -685,6 +718,29 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--agenda-id", "UPSTREAM-42"]));
         assert_eq!(args.last().unwrap(), "audit auth");
+    }
+
+    #[test]
+    fn canopus_command_words_parse_configured_binary_and_args() {
+        let argv = parse_command_words("/opt/stellaris/canopus --profile local");
+
+        assert_eq!(
+            argv,
+            vec![
+                "/opt/stellaris/canopus".to_string(),
+                "--profile".to_string(),
+                "local".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn discord_notify_text_is_bounded() {
+        let text = "x".repeat(2001);
+        let truncated = truncate_discord_text(&text, 1900);
+
+        assert_eq!(truncated.chars().count(), 1900);
+        assert!(truncated.ends_with('…'));
     }
 
     fn unique_tmp(name: &str) -> std::path::PathBuf {
