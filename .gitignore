@@ -16,6 +16,7 @@ apps/europa/projects.json
 .codex
 .codex/
 .omc/
+.omo/
 .omx/
 **/.DS_Store
 __pycache__/
